@@ -17,7 +17,9 @@ AURA should be able to:
 9. Produce citations and execution traces.
 10. Measure system quality and performance.
 
-The first LLM provider is OpenAI, but AURA must never become OpenAI-specific.
+AURA must not depend on a specific model vendor or inference provider.
+
+Open and self-hosted models are first-class targets. Hosted model providers may be supported later as optional providers.
 
 ---
 
@@ -33,7 +35,11 @@ The first LLM provider is OpenAI, but AURA must never become OpenAI-specific.
 
 * React
 * Next.js
-* TypeScript
+* JavaScript
+
+TypeScript is not used in AURA.
+
+The frontend should use .js / .jsx files rather than .ts / .tsx.
 
 ### Data
 
@@ -56,26 +62,42 @@ The first LLM provider is OpenAI, but AURA must never become OpenAI-specific.
 
 ### LLM abstraction
 
-Application code must depend on internal provider interfaces rather than directly on OpenAI.
+Application code must depend on internal provider interfaces rather than directly on a specific model vendor.
 
 Use concepts such as:
-
-```text
 LLMProvider
 EmbeddingProvider
-```
 
-OpenAI is an implementation of these interfaces.
+The provider layer must hide inference-provider details from the rest of the application.
 
-Future providers may include:
+Potential inference targets include:
 
-* Local models
-* Ollama
-* vLLM
-* Other OpenAI-compatible servers
-* Other hosted providers
+NVIDIA NIM
+Ollama
+vLLM
+Other OpenAI-compatible inference servers
+Other local/self-hosted inference systems
+Hosted model providers
 
-Switching providers should not require rewriting agents, RAG, API endpoints, or frontend code.
+These are provider targets, not core application dependencies.
+
+AURA should be able to switch models or inference providers without rewriting:
+
+Agents
+RAG
+API endpoints
+Frontend
+Evaluation logic
+
+The preferred development sequence is:
+
+Mock Provider
+      ↓
+Local/Open Model
+      ↓
+Additional Providers
+
+The initial implementation must not require a paid external LLM API.
 
 ### Frontend boundary
 
@@ -87,6 +109,7 @@ The frontend must never directly access:
 * Redis
 * LLM credentials
 * Internal AI services
+* Model interface endpoints
 
 ### Secrets
 

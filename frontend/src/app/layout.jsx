@@ -1,13 +1,12 @@
-import type { Metadata } from "next";
 import "./globals.css";
 
-export const metadata: Metadata = {
+export const metadata = {
   title: "AURA — Autonomous Research & Engineering Agent",
   description:
     "An LLM-agnostic agentic AI platform for complex research and engineering tasks.",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <head>
