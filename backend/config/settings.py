@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     # Local
     "health",
     "gateway",
+    "rag",
 ]
 
 MIDDLEWARE = [
@@ -162,4 +163,26 @@ AI_GATEWAY = {
     "MODEL": os.environ.get("AI_MODEL", "mock-model"),
     "ENDPOINT": os.environ.get("AI_ENDPOINT", ""),
     "TIMEOUT": float(os.environ.get("AI_TIMEOUT", "30.0")),
+}
+
+# ---------------------------------------------------------------------------
+# Embedding Configuration
+# ---------------------------------------------------------------------------
+# Embedding dimensions are fixed per schema. Changing dimensions requires
+# a database migration and schema change.
+
+AI_EMBEDDINGS = {
+    "PROVIDER": os.environ.get("AI_EMBEDDING_PROVIDER", "mock"),
+    "MODEL": os.environ.get("AI_EMBEDDING_MODEL", "mock-embedding"),
+    "DIMENSIONS": int(os.environ.get("AI_EMBEDDING_DIMENSIONS", "384")),
+}
+
+# ---------------------------------------------------------------------------
+# RAG Configuration
+# ---------------------------------------------------------------------------
+
+AI_RAG = {
+    "CHUNK_SIZE": int(os.environ.get("AI_RAG_CHUNK_SIZE", "512")),
+    "CHUNK_OVERLAP": int(os.environ.get("AI_RAG_CHUNK_OVERLAP", "50")),
+    "TOP_K": int(os.environ.get("AI_RAG_TOP_K", "5")),
 }

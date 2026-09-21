@@ -2,9 +2,9 @@
 
 ## Current Phase
 
-**M1 — Model Gateway: COMPLETE**
+**M2 — Basic RAG: COMPLETE**
 
-**Next: M2 — Basic RAG**
+**Next: M3 — Advanced RAG**
 
 ---
 
@@ -65,6 +65,38 @@ Verified:
 * `git diff --check` passes
 * Zero external model SDKs or paid APIs required
 
+### M2 — Basic RAG
+
+Minimal, production-oriented basic retrieval-augmented generation pipeline implemented on top of the Model Gateway foundation.
+
+Implemented:
+
+* Document and DocumentChunk data models with pgvector `VectorField(dimensions=384)`
+* Initial migration with `VectorExtension()` operation
+* Provider-agnostic `EmbeddingProvider` interface (`embed_query`, `embed_texts`, `dimensions`)
+* Deterministic `MockEmbeddingProvider` (hash-based unit-normalized 384-dimensional vectors)
+* Embedding provider registry (`register_embedding_provider`, `create_embedding_provider`)
+* Deterministic character-based chunking with configurable overlap (`chunk_size=512`, `chunk_overlap=50`)
+* Ingestion pipeline (`ingest_document`) with atomic chunk persistence and status transitions
+* Database-side exact cosine distance retrieval using `pgvector.django.CosineDistance`
+* Similarity score calculation (`1.0 - cosine_distance`) and threshold/top-k filtering
+* Structured context assembly formatting retrieved sources and chunk text for LLM prompts
+* RAG pipeline orchestration (`RAGPipeline`) routing generation strictly through `ModelGateway.generate()`
+* Configuration via Django settings (`AI_EMBEDDINGS`, `AI_RAG`) and `.env.example`
+* Comprehensive test suite covering models, chunking, embeddings, ingestion, retrieval, context, and pipeline
+
+Verified:
+
+* PostgreSQL 18.4 with pgvector 0.8.0 server extension
+* Python `pgvector` package installed in backend environment
+* Django migration `rag.0001_initial` applied successfully
+* 164/164 backend automated tests pass (including 98 RAG tests)
+* Django system checks pass (`python manage.py check`)
+* Model migration check passes with no pending changes
+* Frontend Next.js production build passes with zero TypeScript
+* `git diff --check` passes with zero whitespace issues
+* Zero vendor LLM/embedding SDK dependencies introduced
+
 ---
 
 ## Current Repository State
@@ -76,6 +108,7 @@ Backend
   Django REST Framework
   PostgreSQL
   Model Gateway (M1)
+  Basic RAG (M2)
 
 Frontend
   Next.js
@@ -83,14 +116,16 @@ Frontend
   JavaScript / JSX
 
 Infrastructure
-  PostgreSQL
+  PostgreSQL (18.4)
+  pgvector (0.8.0)
   Redis planned
-  pgvector planned
 
 AI
   Model Gateway implemented
-  Mock provider implemented
-  RAG planned
+  Mock LLM provider implemented
+  EmbeddingProvider abstraction implemented
+  Mock embedding provider implemented
+  Basic RAG pipeline implemented
   Agent runtime planned
 ```
 
@@ -98,13 +133,13 @@ No external AI provider API or key is required.
 
 ---
 
-## M2 — Basic RAG
+## M3 — Advanced RAG
 
 **Status: NEXT**
 
 ### Objective
 
-Introduce document ingestion, chunking, embeddings, pgvector storage, and basic grounded retrieval.
+Introduce hybrid retrieval, BM25 keyword search, reciprocal rank fusion, reranking, and query expansion.
 
 ---
 
@@ -113,8 +148,8 @@ Introduce document ingestion, chunking, embeddings, pgvector storage, and basic 
 ```text
 M0  Foundation              COMPLETE
 M1  Model Gateway           COMPLETE
-M2  Basic RAG               NEXT
-M3  Advanced RAG
+M2  Basic RAG               COMPLETE
+M3  Advanced RAG            NEXT
 M4  Agent System
 M5  Autonomous Research
 M6  Evaluation
