@@ -1,96 +1,173 @@
-# AURA — Project Status
+# AURA — Development Status
 
 ## Current Phase
 
-**M0 — Foundation**
+**M1 — Model Gateway: COMPLETE**
 
-## Repository State
+**Next: M2 — Basic RAG**
 
-The repository contains the application foundation: a Django backend with
-Django REST Framework, a Next.js + TypeScript frontend, and PostgreSQL
-configuration via environment variables.
+---
 
-Current structure:
+## Completed
+
+### M0 — Foundation
+
+Repository and application foundation established.
+
+Implemented:
+
+* Git repository and project structure
+* Django backend
+* Django REST Framework
+* PostgreSQL configuration
+* Environment-based configuration
+* Backend health endpoint
+* Backend automated tests
+* Next.js frontend
+* React frontend using JavaScript/JSX
+* Frontend development/build configuration
+* Initial project documentation
+
+Verified:
+
+* Django migrations pass
+* Django tests pass
+* Django system checks pass
+* Backend health endpoint returns successfully
+* Next.js production build passes
+* Next.js development server starts successfully
+* Frontend contains no TypeScript source files
+* `git diff --check` passes
+
+### M1 — Model Gateway
+
+Internal model gateway and provider abstraction implemented without requiring external LLM APIs.
+
+Implemented:
+
+* `LLMProvider` abstract base interface (`generate`, `stream`, `structured_output`, `metadata`)
+* `ModelGateway` routing, validation, error normalization, and metadata delegation
+* `MockLLMProvider` deterministic offline mock provider
+* Provider-independent data contracts (`Message`, `GenerationRequest`, `GenerationResponse`, `StreamChunk`, `StructuredOutputRequest`, `StructuredOutputResponse`, `ProviderMetadata`, `UsageInfo`)
+* Externalized configuration (`GatewayConfig`, Django `settings.AI_GATEWAY`, `.env.example`)
+* Decoupled provider registry (`register_provider`, `create_provider`)
+* Normalized error hierarchy preventing credential exposure (`GatewayError`, `ProviderUnavailableError`, `UnsupportedCapabilityError`, `InvalidRequestError`, `ProviderConfigurationError`, `GenerationError`)
+* AI architecture documentation (`docs/AI.md`)
+* Deterministic unit tests covering types, configuration, mock provider, and gateway
+
+Verified:
+
+* 63 gateway unit tests pass
+* Full backend test suite passes (66/66 tests)
+* Django system checks pass
+* Backend health check endpoint returns 200 OK
+* Next.js production build passes
+* `git diff --check` passes
+* Zero external model SDKs or paid APIs required
+
+---
+
+## Current Repository State
 
 ```text
-AURA/
-├── AGENTS.md
-├── README.md
-├── .gitignore
-├── .env.example
-├── docs/
-│   └── STATUS.md
-├── specs/
-│   └── tasks/
-│       └── TASK-001.md
-├── backend/
-│   ├── manage.py
-│   ├── requirements.txt
-│   ├── config/
-│   │   ├── __init__.py
-│   │   ├── settings.py
-│   │   ├── urls.py
-│   │   ├── wsgi.py
-│   │   └── asgi.py
-│   └── health/
-│       ├── __init__.py
-│       ├── views.py
-│       ├── urls.py
-│       └── tests.py
-└── frontend/
-    ├── package.json
-    ├── package-lock.json
-    ├── next.config.ts
-    ├── tsconfig.json
-    ├── eslint.config.mjs
-    └── src/
-        └── app/
-            ├── globals.css
-            ├── layout.tsx
-            └── page.tsx
+Backend
+  Python
+  Django
+  Django REST Framework
+  PostgreSQL
+  Model Gateway (M1)
+
+Frontend
+  Next.js
+  React
+  JavaScript / JSX
+
+Infrastructure
+  PostgreSQL
+  Redis planned
+  pgvector planned
+
+AI
+  Model Gateway implemented
+  Mock provider implemented
+  RAG planned
+  Agent runtime planned
 ```
 
-## Implemented
+No external AI provider API or key is required.
 
-* Git repository initialized
-* GitHub repository created
-* Initial agent instructions created
-* Initial project README created
-* Documentation structure created
-* Django backend under `backend/`
-* Django REST Framework configured
-* PostgreSQL configuration via environment variables
-* Health-check endpoint: `GET /api/health/`
-* Health-check endpoint tests
-* Next.js + TypeScript frontend under `frontend/`
-* AURA landing page
-* `.env.example` with safe placeholder values
-* `.gitignore` for Python, Node.js, environment files
+---
 
-## Not Yet Implemented
+## M2 — Basic RAG
 
-* PostgreSQL database and user creation (manual setup required)
-* pgvector
-* Redis
-* LLM provider abstraction
-* OpenAI integration
-* Embeddings
-* RAG
-* Agent runtime
-* LangGraph
-* Tools
-* Evaluation system
-* Authentication
-* Production deployment
+**Status: NEXT**
 
-## Immediate Next Task
+### Objective
 
-Set up the PostgreSQL database and user, then run migrations and tests.
+Introduce document ingestion, chunking, embeddings, pgvector storage, and basic grounded retrieval.
 
-After that, proceed to M1 — LLM Gateway.
+---
 
-## Development Rule
+## Development Roadmap
 
-AURA is built incrementally.
+```text
+M0  Foundation              COMPLETE
+M1  Model Gateway           COMPLETE
+M2  Basic RAG               NEXT
+M3  Advanced RAG
+M4  Agent System
+M5  Autonomous Research
+M6  Evaluation
+M7  Local/Open Model Expansion
+M8  Deployment
+```
 
-Each task should produce a working and testable change before the next capability is introduced.
+Milestones are incremental. Each milestone should produce a working, tested increment.
+
+---
+
+## Development Workflow
+
+For each milestone:
+
+```text
+Specification
+     ↓
+Implementation
+     ↓
+Tests
+     ↓
+Review
+     ↓
+Fix
+     ↓
+Commit
+     ↓
+Next milestone
+```
+
+The repository should remain buildable and testable throughout development.
+
+---
+
+## Architecture Principle
+
+AURA is **open-model-first and LLM-agnostic**.
+
+No core component may depend directly on a specific model vendor or inference provider.
+
+Model-specific and provider-specific logic belongs behind the internal model/provider abstraction.
+
+The intended progression is:
+
+```text
+Provider Interface
+       ↓
+Mock Provider
+       ↓
+Local/Open Model
+       ↓
+Additional Providers
+```
+
+AURA must not require a paid external LLM API for core development.

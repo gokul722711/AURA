@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "rest_framework",
     # Local
     "health",
+    "gateway",
 ]
 
 MIDDLEWARE = [
@@ -150,4 +151,15 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",
     ],
+}
+
+# ---------------------------------------------------------------------------
+# Model Gateway
+# ---------------------------------------------------------------------------
+
+AI_GATEWAY = {
+    "PROVIDER": os.environ.get("AI_PROVIDER", "mock"),
+    "MODEL": os.environ.get("AI_MODEL", "mock-model"),
+    "ENDPOINT": os.environ.get("AI_ENDPOINT", ""),
+    "TIMEOUT": float(os.environ.get("AI_TIMEOUT", "30.0")),
 }
