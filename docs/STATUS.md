@@ -2,9 +2,9 @@
 
 ## Current Phase
 
-**M5 — Autonomous Research: COMPLETE**
+**M6 — Research Result & Evidence Quality: COMPLETE**
 
-**Next: M6 — Evaluation**
+**Next: M7 — Evaluation**
 
 ---
 
@@ -205,11 +205,11 @@ Implements:
 * **Grounded Final Synthesis**: Strict grounding rules ensuring the final response references supporting evidence chunks. If insufficient evidence exists in the knowledge base, the agent explicitly states this without hallucinating.
 * **Bounded Execution**: Full reuse of M4 `AgentRuntime`, `ExecutionLimits`, `LimitTracker`, `ToolPolicy`, `ExecutionTrace`, and cancellation boundaries.
 * **Factory Helper** (`backend/agent/research.py`): `create_research_runtime()` wiring `ResearchPlanner`, `RAGSearchTool`, and `AgentRuntime`.
-* **Deterministic Tests**: 22 new tests (11 provider tests in `backend/gateway/tests/test_nvidia.py` and 11 research tests in `backend/agent/tests/test_research.py`) covering all single-query, multi-query, insufficient evidence, limits, cancellation, and error cases offline without requiring network access or external API keys.
+* **Deterministic Tests**: 32 research and provider tests covering all single-query, multi-query, insufficient evidence, limits, cancellation, structured decisions, and evidence quality offline without requiring network access or external API keys.
 
 Verified:
 
-* 367/367 backend tests pass (100% offline, deterministic)
+* 377/377 backend tests pass (100% offline, deterministic)
 * System check (`python manage.py check`) passes with zero issues
 * Model migrations check (`makemigrations --check --dry-run`) passes
 * Frontend Next.js production build passes with zero TypeScript
@@ -219,18 +219,42 @@ Verified:
 
 ---
 
+## M6 — Research Result & Evidence Quality
+
+Delivers structured research result modeling, deterministic chunk-level evidence accumulation, citation integrity, and source metadata attribution across iterative research loops.
+
+Implemented components:
+
+* **Structured Result Model** (`backend/agent/results.py`): `ResearchEvidence` and `ResearchResult` preserving objective, final grounded answer, deduplicated evidence, document/source metadata, queries, iterations, and explicit grounding status (`has_evidence`, `is_grounded`).
+* **Evidence Accumulation & Deduplication** (`backend/agent/planning/research.py`): Chunk-level deduplication by `chunk_id` while retaining first-seen ordering and accumulating evidence across all replanning iterations.
+* **Citation Integrity** (`ResearchResult.verify_citations`): Standardized `[Title, Chunk: ID]` attribution traced directly to retrieved knowledge base chunks; zero invented citations.
+* **Research Runtime Integration** (`backend/agent/research.py`, `backend/agent/runtime.py`): `ResearchRuntime.run_research()` and `AgentRunResult.research_result` providing access to structured research results while preserving 100% backward compatibility with M4/M5 execution.
+* **Deterministic Tests**: 16 focused M6 unit and regression tests in `backend/agent/tests/test_research.py` validating empty evidence, single evidence, multiple evidence, duplicate chunk deduplication, multi-iteration accumulation, metadata preservation, JSON round-tripping, citation integrity, mutable-state leak prevention, null safety, and source aggregation collisions.
+
+Verified:
+
+* 383/383 backend tests pass (100% offline, deterministic)
+* System check (`python manage.py check`) passes with zero issues
+* Model migrations check (`makemigrations --check --dry-run`) passes
+* Frontend Next.js production build passes with zero TypeScript
+* `git diff --check` passes
+* Zero secrets in code, docs, tests, or .env.example
+
+---
+
 ## Development Roadmap
 
 ```text
-M0  Foundation              COMPLETE
-M1  Model Gateway           COMPLETE
-M2  Basic RAG               COMPLETE
-M3  Advanced RAG            COMPLETE
-M4  Agent System            COMPLETE
-M5  Autonomous Research     COMPLETE
-M6  Evaluation              NEXT
-M7  Local/Open Model Expansion
-M8  Deployment
+M0  Foundation                          COMPLETE
+M1  Model Gateway                       COMPLETE
+M2  Basic RAG                           COMPLETE
+M3  Advanced RAG                        COMPLETE
+M4  Agent System                        COMPLETE
+M5  Autonomous Research                 COMPLETE
+M6  Research Result & Evidence Quality  COMPLETE
+M7  Evaluation                          NEXT
+M8  Local/Open Model Expansion
+M9  Deployment
 ```
 
 Milestones are incremental. Each milestone should produce a working, tested increment.

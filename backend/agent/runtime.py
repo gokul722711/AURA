@@ -48,6 +48,13 @@ class AgentRunResult:
     def is_success(self) -> bool:
         return self.state.status == AgentStatus.COMPLETED
 
+    @property
+    def research_result(self) -> Any:
+        """Return structured ResearchResult if available for this run."""
+        from agent.results import ResearchResult
+
+        return ResearchResult.from_run_result(self)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "state": self.state.to_dict(),

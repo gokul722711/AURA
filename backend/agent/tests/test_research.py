@@ -8,8 +8,15 @@ from django.test import TestCase
 
 from agent.execution.limits import ExecutionLimits
 from agent.planning.research import RESEARCH_DECISION_SCHEMA, ResearchPlanner
-from agent.research import create_research_runtime
-from agent.state import AgentStatus
+from agent.research import (
+    ResearchEvidence,
+    ResearchResult,
+    ResearchRuntime,
+    create_research_runtime,
+)
+from agent.results import _aggregate_sources
+from agent.state import AgentState, AgentStatus
+from rag.models import Document
 from agent.tools.builtin.rag import RAGSearchTool
 from agent.tools.policy import DefaultToolPolicy
 from agent.tools.registry import ToolRegistry
@@ -510,3 +517,489 @@ class AutonomousResearchTests(TestCase):
         self.assertFalse(result.is_success)
         self.assertEqual(result.status, AgentStatus.FAILED)
         self.assertTrue(any("must be a JSON object" in err for err in result.state.errors))
+
+
+class ResearchEvidenceAndResultTests(TestCase):
+    """Focused offline unit and regression tests for M6 Research Result & Evidence Quality."""
+
+    def setUp(self) -> None:
+        self.embedding_provider = MockEmbeddingProvider(dimensions=384)
+        Document.objects.all().delete()
+        self.doc_a = ingest_document(
+            title="AURA Agent Architecture",
+            content="Agent Runtime coordinates stateful execution and replanning cycles.",
+            embedding_provider=self.embedding_provider,
+            source="aura://docs/agent-arch",
+        )
+        self.doc_b = ingest_document(
+            title="AURA RAG Vector Store",
+            content="Vector store utilizes PostgreSQL pgvector for deterministic cosine similarity retrieval.",
+            embedding_provider=self.embedding_provider,
+            source="aura://docs/vector-store",
+        )
+
+    def _build_runtime(
+        self,
+        provider: LLMProvider,
+        limits: ExecutionLimits | None = None,
+        retrieval_config: RetrievalConfig | None = None,
+    ) -> ResearchRuntime:
+        gateway = ModelGateway(provider=provider)
+        return create_research_runtime(
+            gateway=gateway,
+            embedding_provider=self.embedding_provider,
+            limits=limits or ExecutionLimits(max_iterations=10, max_tool_calls=10, max_time_seconds=30.0),
+            retrieval_config=retrieval_config or RetrievalConfig(top_k=3),
+        )
+
+    def test_empty_evidence(self) -> None:
+        """Requirement: empty evidence produces a structured no-evidence result."""
+        Document.objects.all().delete()
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "continue", "query": "nonexistent"}',
+                '{"decision": "finish"}',
+            ]
+        )
+        runtime = self._build_runtime(provider)
+        res = runtime.run_research("Find missing documentation")
+
+        self.assertFalse(res.has_evidence)
+        self.assertFalse(res.is_grounded)
+        self.assertEqual(res.evidence, [])
+        self.assertEqual(res.sources, [])
+        self.assertEqual(res.citations, [])
+        self.assertIn("did not provide sufficient supporting evidence", res.final_answer)
+
+    def test_single_evidence_item(self) -> None:
+        """Requirement: single evidence item preserves title, chunk, citation, and grounding."""
+        Document.objects.all().delete()
+        doc = ingest_document(
+            title="Quantum Superposition",
+            content="Qubits remain in superposition until measured.",
+            embedding_provider=self.embedding_provider,
+            source="quantum.pdf",
+        )
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "continue", "query": "superposition"}',
+                '{"decision": "finish"}',
+                "Grounded answer citing [Quantum Superposition, Chunk: test-chunk].",
+            ]
+        )
+        runtime = self._build_runtime(provider)
+        res = runtime.run_research("What is superposition?")
+
+        self.assertTrue(res.has_evidence)
+        self.assertTrue(res.is_grounded)
+        self.assertEqual(len(res.evidence), 1)
+        ev = res.evidence[0]
+        self.assertEqual(ev.document_title, "Quantum Superposition")
+        self.assertEqual(ev.document_source, "quantum.pdf")
+        self.assertEqual(ev.content, "Qubits remain in superposition until measured.")
+        self.assertEqual(ev.citation, f"[Quantum Superposition, Chunk: {ev.chunk_id}]")
+        self.assertEqual(len(res.sources), 1)
+        self.assertEqual(res.sources[0]["document_title"], "Quantum Superposition")
+        self.assertEqual(res.sources[0]["chunk_count"], 1)
+
+    def test_multiple_evidence_items(self) -> None:
+        """Requirement: multiple evidence items are accumulated and grouped by source."""
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "continue", "query": "architecture vector store"}',
+                '{"decision": "finish"}',
+                "Comprehensive answer synthesizing both agent architecture and vector store.",
+            ]
+        )
+        runtime = self._build_runtime(provider)
+        res = runtime.run_research("Explain AURA architecture and storage")
+
+        self.assertTrue(res.has_evidence)
+        self.assertEqual(len(res.evidence), 2)
+        self.assertEqual(len(res.sources), 2)
+        source_titles = {s["document_title"] for s in res.sources}
+        self.assertIn("AURA Agent Architecture", source_titles)
+        self.assertIn("AURA RAG Vector Store", source_titles)
+
+    def test_duplicate_chunk_ids_deduplicated(self) -> None:
+        """Requirement: duplicate chunk IDs across searches are deduplicated while preserving order."""
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "continue", "query": "agent architecture"}',
+                '{"decision": "continue", "query": "agent architecture again"}',
+                '{"decision": "finish"}',
+                "Final synthesis after duplicate queries.",
+            ]
+        )
+        runtime = self._build_runtime(provider)
+        res = runtime.run_research("How does agent architecture work?")
+
+        chunk_ids = [e.chunk_id for e in res.evidence]
+        self.assertEqual(len(chunk_ids), len(set(chunk_ids)))
+        self.assertGreaterEqual(len(chunk_ids), 1)
+
+    def test_evidence_retained_across_iterations(self) -> None:
+        """Requirement: evidence collected in early iterations is retained for replanning and synthesis."""
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "continue", "query": "agent architecture"}',
+                '{"decision": "continue", "query": "vector store"}',
+                '{"decision": "finish"}',
+                "Final answer combining evidence across multiple iterations.",
+            ]
+        )
+        runtime = self._build_runtime(provider)
+        res = runtime.run_research("Explain entire AURA system")
+
+        self.assertEqual(len(res.queries), 2)
+        self.assertEqual(len(res.evidence), 2)
+        # Check that replanning prompt for second decision call included evidence from first call
+        self.assertGreaterEqual(len(provider.recorded_structured_requests), 2)
+        second_decision_prompt = provider.recorded_structured_requests[1].messages[-1].content
+        self.assertIn("AURA Agent Architecture", second_decision_prompt)
+        # Check that final synthesis request included both sources
+        synthesis_req = provider.recorded_requests[-1]
+        self.assertIn("AURA Agent Architecture", synthesis_req.messages[-1].content)
+        self.assertIn("AURA RAG Vector Store", synthesis_req.messages[-1].content)
+
+    def test_citation_source_metadata_preservation(self) -> None:
+        """Requirement: citation and source metadata are fully preserved and traceable."""
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "continue", "query": "architecture"}',
+                '{"decision": "finish"}',
+                "Final answer grounded in architecture.",
+            ]
+        )
+        runtime = self._build_runtime(provider)
+        res = runtime.run_research("Investigate architecture")
+
+        self.assertGreaterEqual(len(res.evidence), 1)
+        ev = res.evidence[0]
+        self.assertTrue(len(ev.chunk_id) > 0)
+        self.assertTrue(len(ev.document_title) > 0)
+        self.assertTrue(len(ev.document_source) > 0)
+        self.assertIsNotNone(ev.score)
+        self.assertTrue(ev.citation.startswith(f"[{ev.document_title}, Chunk: {ev.chunk_id}]"))
+
+        # Verify citation verification helper
+        answer_with_citation = f"According to {ev.citation}, stateful execution is coordinated."
+        verification = res.verify_citations(answer_with_citation)
+        self.assertTrue(verification["has_evidence"])
+        self.assertIn(ev.citation, verification["matched_citations"])
+        self.assertIn(ev.chunk_id, verification["matched_chunk_ids"])
+
+    def test_final_result_containing_structured_evidence(self) -> None:
+        """Requirement: final result contains structured evidence, serializes, and round-trips."""
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "continue", "query": "vector store"}',
+                '{"decision": "finish"}',
+                "Grounded response on vector store.",
+            ]
+        )
+        runtime = self._build_runtime(provider)
+        res = runtime.run_research("Storage mechanisms")
+
+        data = res.to_dict()
+        self.assertEqual(data["objective"], "Storage mechanisms")
+        self.assertEqual(data["status"], "completed")
+        self.assertTrue(data["has_evidence"])
+        self.assertTrue(data["is_grounded"])
+        self.assertIsInstance(data["evidence"], list)
+        self.assertIsInstance(data["sources"], list)
+        self.assertIsInstance(data["queries"], list)
+        self.assertIsInstance(data["citations"], list)
+
+        # JSON serializability check
+        json_output = json.dumps(data)
+        self.assertIsInstance(json_output, str)
+
+        # Round-trip deserialization
+        reconstructed = ResearchResult.from_dict(json.loads(json_output))
+        self.assertEqual(reconstructed.objective, res.objective)
+        self.assertEqual(reconstructed.final_answer, res.final_answer)
+        self.assertEqual(len(reconstructed.evidence), len(res.evidence))
+        self.assertEqual(reconstructed.has_evidence, res.has_evidence)
+        self.assertEqual(reconstructed.status, res.status)
+
+    def test_no_context_research_result(self) -> None:
+        """Requirement: no-context research explicitly reflects ungrounded status without inventing citations."""
+        Document.objects.all().delete()
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "continue", "query": "unobtainium"}',
+                '{"decision": "finish"}',
+            ]
+        )
+        runtime = self._build_runtime(provider)
+        res = runtime.run_research("Properties of unobtainium")
+
+        self.assertFalse(res.has_evidence)
+        self.assertFalse(res.is_grounded)
+        self.assertEqual(res.evidence, [])
+        self.assertEqual(res.sources, [])
+        self.assertEqual(res.citations, [])
+        self.assertIn("did not provide sufficient supporting evidence", res.final_answer)
+        # Ensure verification reports zero matched citations
+        verif = res.verify_citations()
+        self.assertFalse(verif["has_evidence"])
+        self.assertEqual(verif["matched_citations"], [])
+
+    def test_successful_multi_iteration_research(self) -> None:
+        """Requirement: successful multi-iteration research loop executes cleanly and returns ResearchResult."""
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "continue", "query": "agent architecture"}',
+                '{"decision": "continue", "query": "vector store"}',
+                '{"decision": "finish"}',
+                "Synthesis after multiple search iterations.",
+            ]
+        )
+        runtime = self._build_runtime(provider)
+        res = runtime.run_research("Multi-step AURA research")
+
+        self.assertEqual(res.status, AgentStatus.COMPLETED)
+        self.assertEqual(len(res.queries), 2)
+        self.assertGreaterEqual(res.iteration_count, 3)
+        self.assertTrue(res.is_grounded)
+        self.assertGreaterEqual(len(res.evidence), 2)
+        self.assertEqual(res.objective, "Multi-step AURA research")
+
+    def test_existing_m5_behavior_remaining_compatible(self) -> None:
+        """Requirement: existing AgentRuntime.run() remains fully compatible and exposes research_result."""
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "continue", "query": "agent architecture"}',
+                '{"decision": "finish"}',
+                "Compatible final output answer.",
+            ]
+        )
+        runtime = self._build_runtime(provider)
+        # Calling standard AgentRuntime.run()
+        run_res = runtime.run("Compatibility test objective")
+
+        self.assertTrue(run_res.is_success)
+        self.assertEqual(run_res.status, AgentStatus.COMPLETED)
+        self.assertIn("Compatible final output answer", run_res.final_output)
+
+        # Accessing research_result property on AgentRunResult
+        research_res = run_res.research_result
+        self.assertIsInstance(research_res, ResearchResult)
+        self.assertEqual(research_res.objective, "Compatibility test objective")
+        self.assertEqual(research_res.final_answer, run_res.final_output)
+        self.assertTrue(research_res.has_evidence)
+
+
+class ResearchResultIntegrityTests(TestCase):
+    """Regression tests for ResearchResult integrity, citation verification, and serialization safety."""
+
+    def test_citation_verification_strict_matching(self) -> None:
+        """Requirement: citation verification requires actual citation, not bare title or chunk ID."""
+        ev1 = ResearchEvidence(
+            chunk_id="c1",
+            document_title="Architecture Overview",
+            document_source="docs/arch.md",
+            content="Django backend routes requests.",
+        )
+        ev2 = ResearchEvidence(
+            chunk_id="c2",
+            document_title="Architecture Overview",
+            document_source="docs/arch.md",
+            content="Agent runtime handles replanning.",
+        )
+        ev_short = ResearchEvidence(
+            chunk_id="1",
+            document_title="Numeric Guide",
+            document_source="docs/num.md",
+            content="Step one is initialization.",
+        )
+        res = ResearchResult(
+            objective="Analyze architecture",
+            final_answer="",
+            evidence=[ev1, ev2, ev_short],
+            sources=[],
+            queries=[],
+            iteration_count=1,
+            has_evidence=True,
+        )
+
+        # 1. Title mentioned without citation -> NOT verified
+        title_only_text = "The Architecture Overview and Numeric Guide describe our system."
+        verif = res.verify_citations(title_only_text)
+        self.assertEqual(verif["matched_citations"], [])
+        self.assertEqual(verif["matched_chunk_ids"], [])
+
+        # 2. Short chunk ID '1' appearing naturally in text -> NOT treated as citation
+        natural_num_text = "We have 1 primary reason to build this."
+        verif = res.verify_citations(natural_num_text)
+        self.assertEqual(verif["matched_citations"], [])
+        self.assertEqual(verif["matched_chunk_ids"], [])
+
+        # 3. One chunk cited (canonical) -> only that chunk verified; chunk 2 from same doc remains unverified
+        one_chunk_text = f"As noted in {ev1.citation}, Django backend routes requests."
+        verif = res.verify_citations(one_chunk_text)
+        self.assertEqual(verif["matched_citations"], [ev1.citation])
+        self.assertEqual(verif["matched_chunk_ids"], ["c1"])
+        self.assertNotIn(ev2.citation, verif["matched_citations"])
+        self.assertNotIn("c2", verif["matched_chunk_ids"])
+
+        # 4. Boundary-delimited chunk citation -> verified
+        boundary_chunk_text = "Refer to Chunk: c2 for runtime details."
+        verif = res.verify_citations(boundary_chunk_text)
+        self.assertEqual(verif["matched_citations"], [ev2.citation])
+        self.assertEqual(verif["matched_chunk_ids"], ["c2"])
+
+        # 5. Multiple canonical citations -> all correctly verified
+        multi_citation_text = f"Synthesizing {ev1.citation} and {ev2.citation} with {ev_short.citation}."
+        verif = res.verify_citations(multi_citation_text)
+        self.assertEqual(len(verif["matched_citations"]), 3)
+        self.assertIn(ev1.citation, verif["matched_citations"])
+        self.assertIn(ev2.citation, verif["matched_citations"])
+        self.assertIn(ev_short.citation, verif["matched_citations"])
+
+    def test_mutable_state_leak_prevention(self) -> None:
+        """Requirement: to_dict() must not expose internal mutable structures like chunk_ids."""
+        ev = ResearchEvidence(
+            chunk_id="c1",
+            document_title="Overview",
+            document_source="doc.md",
+            content="content",
+        )
+        sources = [
+            {
+                "document_title": "Overview",
+                "document_source": "doc.md",
+                "document_id": "doc-1",
+                "chunk_count": 1,
+                "chunk_ids": ["c1"],
+            }
+        ]
+        res = ResearchResult(
+            objective="Test state leak",
+            final_answer="Answer",
+            evidence=[ev],
+            sources=sources,
+            queries=["q1"],
+            iteration_count=1,
+            has_evidence=True,
+            metadata={"tag": "initial"},
+        )
+
+        serialized = res.to_dict()
+        # Mutate serialized chunk_ids and other structures
+        serialized["sources"][0]["chunk_ids"].append("c2-mutated")
+        serialized["sources"][0]["document_title"] = "Mutated Title"
+        serialized["queries"].append("q2-mutated")
+        serialized["metadata"]["tag"] = "mutated"
+
+        # Verify original ResearchResult instance is unchanged
+        self.assertEqual(res.sources[0]["chunk_ids"], ["c1"])
+        self.assertEqual(res.sources[0]["document_title"], "Overview")
+        self.assertEqual(res.queries, ["q1"])
+        self.assertEqual(res.metadata["tag"], "initial")
+
+    def test_from_dict_null_handling(self) -> None:
+        """Requirement: from_dict() must handle explicit null/None values on nullable fields."""
+        data_with_nulls = {
+            "objective": "Nullable test",
+            "final_answer": "Final",
+            "evidence": None,
+            "sources": None,
+            "queries": None,
+            "iteration_count": None,
+            "has_evidence": None,
+            "status": None,
+            "duration_ms": None,
+            "metadata": None,
+        }
+        res = ResearchResult.from_dict(data_with_nulls)
+        self.assertEqual(res.objective, "Nullable test")
+        self.assertEqual(res.final_answer, "Final")
+        self.assertEqual(res.evidence, [])
+        self.assertEqual(res.sources, [])
+        self.assertEqual(res.queries, [])
+        self.assertEqual(res.iteration_count, 0)
+        self.assertEqual(res.has_evidence, False)
+        self.assertEqual(res.status, AgentStatus.COMPLETED)
+        self.assertEqual(res.duration_ms, 0.0)
+        self.assertEqual(res.metadata, {})
+
+        # Ensure to_dict() works without TypeError on null-constructed result
+        data = res.to_dict()
+        self.assertEqual(data["sources"], [])
+        self.assertEqual(data["queries"], [])
+        self.assertEqual(data["metadata"], {})
+
+    def test_from_dict_defensive_copying(self) -> None:
+        """Requirement: from_dict() must not expose input dictionary collections to mutation."""
+        input_sources = [{"document_title": "T", "chunk_ids": ["c1"]}]
+        input_queries = ["q1"]
+        input_meta = {"key": "val"}
+        data = {
+            "objective": "Test",
+            "final_answer": "Answer",
+            "sources": input_sources,
+            "queries": input_queries,
+            "metadata": input_meta,
+        }
+        res = ResearchResult.from_dict(data)
+
+        # Mutate input structures
+        input_sources[0]["chunk_ids"].append("c2")
+        input_queries.append("q2")
+        input_meta["key"] = "changed"
+
+        # Verify res is unaffected
+        self.assertEqual(res.sources[0]["chunk_ids"], ["c1"])
+        self.assertEqual(res.queries, ["q1"])
+        self.assertEqual(res.metadata["key"], "val")
+
+    def test_from_state_null_metadata(self) -> None:
+        """Requirement: from_state() safely handles 'metadata': None in tool results without AttributeError."""
+        state = AgentState(run_id="run-null-meta", objective="Investigate null metadata")
+        state.record_tool_result({
+            "tool_name": "rag_search",
+            "output": [
+                {
+                    "chunk_id": "c1",
+                    "document_title": "Doc",
+                    "document_source": "doc.md",
+                    "content": "content",
+                }
+            ],
+            "is_error": False,
+            "metadata": None,  # Explicitly None
+        })
+        state.metadata = None  # Explicitly None
+
+        res = ResearchResult.from_state(state)
+        self.assertEqual(res.objective, "Investigate null metadata")
+        self.assertEqual(len(res.evidence), 1)
+        self.assertEqual(res.queries, [])
+        self.assertEqual(res.metadata, {})
+
+    def test_source_aggregation_distinct_document_ids(self) -> None:
+        """Requirement: documents with identical title and source but different IDs produce separate sources."""
+        doc_a_chunk = ResearchEvidence(
+            chunk_id="chunk-a1",
+            document_title="Overview",
+            document_source="unknown",
+            document_id="doc-a",
+            content="Content of document A",
+        )
+        doc_b_chunk = ResearchEvidence(
+            chunk_id="chunk-b1",
+            document_title="Overview",
+            document_source="unknown",
+            document_id="doc-b",
+            content="Content of document B",
+        )
+        sources = _aggregate_sources([doc_a_chunk, doc_b_chunk])
+        self.assertEqual(len(sources), 2)
+        doc_ids = {s["document_id"] for s in sources}
+        self.assertEqual(doc_ids, {"doc-a", "doc-b"})
+        for s in sources:
+            self.assertEqual(s["document_title"], "Overview")
+            self.assertEqual(s["document_source"], "unknown")
+            self.assertEqual(s["chunk_count"], 1)

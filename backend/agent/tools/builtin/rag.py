@@ -91,6 +91,7 @@ class RAGSearchTool(Tool):
         for r in results:
             output_chunks.append({
                 "chunk_id": r.chunk_id,
+                "document_id": getattr(r, "document_id", None),
                 "document_title": r.document_title,
                 "document_source": r.document_source,
                 "score": r.score,

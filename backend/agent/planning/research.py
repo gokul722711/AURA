@@ -1,4 +1,4 @@
-"""LLM-driven Autonomous Research Planner for M5."""
+"""LLM-driven Autonomous Research Planner for M5/M6."""
 
 import json
 import uuid
@@ -6,6 +6,7 @@ from typing import Any
 
 from agent.exceptions import InvalidPlanError
 from agent.planning.base import ActionType, AgentStep, Plan, Planner
+from agent.results import ResearchEvidence
 from agent.state import AgentState
 from gateway.gateway import ModelGateway
 from gateway.types import GenerationRequest, Message, StructuredOutputRequest
@@ -31,7 +32,7 @@ class ResearchPlanner(Planner):
     """Iterative, LLM-driven planner for autonomous research.
 
     Evaluates accumulated evidence, autonomously decides whether to continue
-    searching or finish, and produces grounded final synthesis.
+    searching or finish, and produces grounded final synthesis with citation tracing.
     """
 
     supports_replanning: bool = True
@@ -97,12 +98,24 @@ class ResearchPlanner(Planner):
         elif decision == "finish":
             synthesis = self._synthesize_grounded_answer(objective, evidence, past_queries)
             step_num = len(state.step_history) + 1
+            evidence_dicts = [
+                ev.to_dict() if hasattr(ev, "to_dict") else ev for ev in evidence
+            ]
             step = AgentStep(
                 step_id=f"step-finish-{step_num}",
                 action_type=ActionType.FINISH,
                 description="Synthesize grounded final research response",
-                payload={"final_answer": synthesis},
-                metadata={"evidence_count": len(evidence)},
+                payload={
+                    "final_answer": synthesis,
+                    "evidence": evidence_dicts,
+                    "evidence_count": len(evidence),
+                    "has_evidence": len(evidence) > 0,
+                    "queries": past_queries,
+                },
+                metadata={
+                    "evidence_count": len(evidence),
+                    "has_evidence": len(evidence) > 0,
+                },
             )
             return Plan(
                 plan_id=str(uuid.uuid4()),
@@ -112,6 +125,7 @@ class ResearchPlanner(Planner):
                     "planner": "ResearchPlanner",
                     "decision": "finish",
                     "evidence_count": len(evidence),
+                    "has_evidence": len(evidence) > 0,
                 },
             )
 
@@ -120,9 +134,9 @@ class ResearchPlanner(Planner):
                 f"Invalid research decision '{decision}'. Expected 'continue' or 'finish'."
             )
 
-    def _extract_evidence(self, state: AgentState) -> list[dict[str, Any]]:
+    def _extract_evidence(self, state: AgentState) -> list[ResearchEvidence]:
         """Accumulate unique chunks retrieved from all RAG searches in this run."""
-        evidence: list[dict[str, Any]] = []
+        evidence: list[ResearchEvidence] = []
         seen_chunk_ids: set[str] = set()
 
         for res in state.tool_results:
@@ -136,6 +150,12 @@ class ResearchPlanner(Planner):
                                 continue
                             if cid:
                                 seen_chunk_ids.add(cid)
+                            evidence.append(ResearchEvidence.from_dict(c))
+                        elif isinstance(c, ResearchEvidence):
+                            if c.chunk_id and c.chunk_id in seen_chunk_ids:
+                                continue
+                            if c.chunk_id:
+                                seen_chunk_ids.add(c.chunk_id)
                             evidence.append(c)
         return evidence
 
@@ -153,7 +173,7 @@ class ResearchPlanner(Planner):
         self,
         objective: str,
         past_queries: list[str],
-        evidence: list[dict[str, Any]],
+        evidence: list[Any],
     ) -> dict[str, Any]:
         """Prompt LLM via ModelGateway.structured_output to decide next research step or finish."""
         system_prompt = (
@@ -182,10 +202,18 @@ class ResearchPlanner(Planner):
             if evidence:
                 evidence_items = []
                 for idx, ev in enumerate(evidence, start=1):
-                    title = ev.get("document_title", "Untitled")
-                    cid = ev.get("chunk_id", "N/A")
-                    content = ev.get("content", "").strip()
-                    evidence_items.append(f"[{idx}] Source: {title} (Chunk: {cid})\n{content}")
+                    title = getattr(ev, "document_title", None) or (
+                        ev.get("document_title") if isinstance(ev, dict) else "Untitled"
+                    )
+                    cid = getattr(ev, "chunk_id", None) or (
+                        ev.get("chunk_id") if isinstance(ev, dict) else "N/A"
+                    )
+                    content = getattr(ev, "content", None) or (
+                        ev.get("content") if isinstance(ev, dict) else ""
+                    )
+                    evidence_items.append(
+                        f"[{idx}] Source: {title} (Chunk: {cid})\n{content.strip()}"
+                    )
                 evidence_str = "\n\n".join(evidence_items)
             else:
                 evidence_str = "No relevant chunks were found by previous queries."
@@ -227,7 +255,7 @@ class ResearchPlanner(Planner):
     def _synthesize_grounded_answer(
         self,
         objective: str,
-        evidence: list[dict[str, Any]],
+        evidence: list[Any],
         past_queries: list[str],
     ) -> str:
         """Synthesize final grounded response using retrieved evidence and citations."""
@@ -240,12 +268,20 @@ class ResearchPlanner(Planner):
 
         evidence_items = []
         for idx, ev in enumerate(evidence, start=1):
-            title = ev.get("document_title", "Untitled")
-            source = ev.get("document_source", "Unknown")
-            cid = ev.get("chunk_id", "N/A")
-            content = ev.get("content", "").strip()
+            title = getattr(ev, "document_title", None) or (
+                ev.get("document_title") if isinstance(ev, dict) else "Untitled"
+            )
+            source = getattr(ev, "document_source", None) or (
+                ev.get("document_source") if isinstance(ev, dict) else "Unknown"
+            )
+            cid = getattr(ev, "chunk_id", None) or (
+                ev.get("chunk_id") if isinstance(ev, dict) else "N/A"
+            )
+            content = getattr(ev, "content", None) or (
+                ev.get("content") if isinstance(ev, dict) else ""
+            )
             evidence_items.append(
-                f"[{idx}] Source: {title} | Document: {source} | Chunk: {cid}\n{content}"
+                f"[{idx}] Source: {title} | Document: {source} | Chunk: {cid}\n{content.strip()}"
             )
         evidence_block = "\n\n".join(evidence_items)
 
@@ -257,7 +293,8 @@ class ResearchPlanner(Planner):
             "or assume facts not supported by the evidence.\n"
             "2. If the evidence is insufficient to answer parts of the objective, clearly "
             "indicate that the available knowledge base did not provide sufficient supporting evidence.\n"
-            "3. Cite supporting sources using references like [Source Title, Chunk: ID] where appropriate."
+            "3. Cite supporting sources using references like [Source Title, Chunk: ID] where appropriate. "
+            "Never invent citations or reference sources not present in the provided evidence."
         )
 
         user_content = (
