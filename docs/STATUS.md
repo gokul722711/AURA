@@ -135,6 +135,7 @@ Backend
   Model Gateway (M1)
   Basic RAG (M2)
   Advanced RAG (M3)
+  Agent System (M4)
 
 Frontend
   Next.js
@@ -156,7 +157,7 @@ AI
   Query processing implemented
   Context optimization implemented
   RAG evaluation framework implemented
-  Agent runtime planned
+  Agent runtime implemented
 ```
 
 No external AI provider API or key is required.
@@ -165,11 +166,24 @@ No external AI provider API or key is required.
 
 ## M4 — Agent System
 
-**Status: NEXT**
+**Status: COMPLETE**
 
 ### Objective
 
 Introduce agent runtime with explicit, stateful, observable, bounded execution.
+
+Implemented:
+
+* **State Model** (`backend/agent/state.py`): In-memory, serializable `AgentState` tracking `run_id`, `objective`, `status` (`pending`, `running`, `waiting`, `completed`, `failed`, `cancelled`), `iteration`, `step_history`, `tool_results`, `final_output`, `errors`, and `metadata`. Strict transition validation.
+* **Planning** (`backend/agent/planning/`): Provider-independent `Planner` abstraction, structured `Plan` and `AgentStep` with `ActionType` (`MODEL`, `TOOL`, `FINISH`). Primary deterministic `MockPlanner` with preconfigured and rule-based step generation for offline testing.
+* **Tool System & Registry** (`backend/agent/tools/`): Abstract `Tool` contract with JSON schemas and `ToolResult`. Centralized `ToolRegistry` with duplicate name prevention and schema introspection.
+* **Authoritative Policy Layer** (`backend/agent/tools/policy.py`): Strict `ToolPolicy` / `DefaultToolPolicy` evaluating `ALLOWED`, `DENIED`, `UNKNOWN`. Tool existence checks, explicit allowlists, denylists, and input validation. No arbitrary shell, filesystem, or network execution.
+* **Safe Builtin Tools** (`backend/agent/tools/builtin/`): Safe `CalculatorTool` using strict AST allowlisting (no `eval`, names, calls, or imports; exponent DoS protection) and `MockEchoTool` for pipeline validation.
+* **Execution & Limits** (`backend/agent/execution/`): `StepExecutor` dispatching actions to `ModelGateway`, `ToolRegistry`, or `FINISH`. Strict `ExecutionLimits` and `LimitTracker` enforcing bounds on `max_iterations`, `max_tool_calls`, and `max_time_seconds`.
+* **Execution Events & Trace** (`backend/agent/events/`): Structured, immutable `ExecutionEvent` dataclasses and `ExecutionTrace` container providing full auditability without external observability platforms.
+* **Agent Runtime & Cancellation** (`backend/agent/runtime.py`): Top-level `AgentRuntime` orchestrating the state machine lifecycle. Synchronous cancellation support checked at safe boundaries (pre-planning, pre-step, post-step).
+* **RAG Tool Integration** (`backend/agent/tools/builtin/rag.py`): `RAGSearchTool` wrapping existing M3 `retrieve_chunks` without direct coupling between `AgentRuntime` and RAG internals.
+* **Comprehensive Test Suite**: 75 tests covering state, transitions, serialization, tools, calculator safety, registry, policy, limits, events, trace, executor, runtime lifecycle, limits enforcement, cancellation, and RAG search.
 
 ---
 
@@ -180,8 +194,8 @@ M0  Foundation              COMPLETE
 M1  Model Gateway           COMPLETE
 M2  Basic RAG               COMPLETE
 M3  Advanced RAG            COMPLETE
-M4  Agent System            NEXT
-M5  Autonomous Research
+M4  Agent System            COMPLETE
+M5  Autonomous Research     NEXT
 M6  Evaluation
 M7  Local/Open Model Expansion
 M8  Deployment

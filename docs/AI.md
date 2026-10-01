@@ -284,41 +284,42 @@ All configuration is environment-variable driven via `AI_RAG_*` prefixed variabl
 
 ---
 
-## 8. Agent Boundary
+## 8. Agent Boundary & Runtime (M4)
 
-The future agent runtime may contain:
-
-```text
-Planner
-Researcher
-Retriever
-Tool Executor
-Synthesizer
-Critic
-Evaluator
-```
-
-These components communicate with models through the Model Gateway.
-
-They must not contain provider-specific code.
-
-Agent execution should be:
-
-* Explicit
-* Stateful
-* Observable
-* Bounded
-* Testable
-
-Execution limits should exist for:
+The agent runtime (`backend/agent/`) coordinates controlled, stateful, observable, and bounded execution:
 
 ```text
-steps
-retries
-tool calls
-tokens
-time
+Objective
+   │
+   ▼
+AgentRuntime
+   │
+   ├──► AgentState (serializable: status, plan, step_history, tool_results, errors)
+   │
+   ├──► Planner (MockPlanner / provider-independent abstraction)
+   │       └── Plan [AgentStep: MODEL | TOOL | FINISH]
+   │
+   ├──► StepExecutor
+   │       ├── MODEL ──► ModelGateway (generate)
+   │       ├── TOOL  ──► ToolPolicy ──► ToolRegistry ──► Tool
+   │       └── FINISH ─► Conclude run with final_output
+   │
+   ├──► LimitTracker (max_iterations, max_tool_calls, max_time_seconds)
+   │
+   ├──► Cancellation (synchronous checks at safe boundaries)
+   │
+   └──► ExecutionTrace (structured immutable events: started, step, tool, model, completed, failed)
 ```
+
+Key architectural properties:
+
+* **Stateful & Serializable**: `AgentState` tracks lifecycle transitions (`pending` $\rightarrow$ `running` $\rightarrow$ `completed` / `failed` / `cancelled`) without database persistence in M4.
+* **Provider-Agnostic Planning**: `Planner` converts `(objective, state)` into a declarative `Plan`. M4 provides `MockPlanner` for deterministic offline testing.
+* **Authoritative Tool Policy**: All tool calls pass through `ToolPolicy`. No arbitrary shell, filesystem, or network execution is permitted.
+* **Safe Builtin Tools**: `CalculatorTool` uses strict AST allowlisting (no `eval()`, names, or calls; exponent DoS protection). `MockEchoTool` enables deterministic reflection.
+* **External RAG Tool**: `RAGSearchTool` bridges to existing M3 retrieval abstractions without coupling runtime internals to vector tables.
+* **Bounded Execution**: Hard constraints enforced by `ExecutionLimits` terminate safely with structured failure events upon limit breach.
+* **Full Observability**: Emits typed `ExecutionEvent` objects collected in `ExecutionTrace` for complete auditability.
 
 ---
 

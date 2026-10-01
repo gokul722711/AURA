@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "health",
     "gateway",
     "rag",
+    "agent",
 ]
 
 MIDDLEWARE = [
@@ -191,4 +192,14 @@ AI_RAG = {
         if os.environ.get("AI_RAG_CONTEXT_MAX_CHARS")
         else None
     ),
+}
+
+# ---------------------------------------------------------------------------
+# Agent Runtime Configuration
+# ---------------------------------------------------------------------------
+
+AI_AGENT = {
+    "MAX_ITERATIONS": int(os.environ.get("AI_AGENT_MAX_ITERATIONS", "10")),
+    "MAX_TOOL_CALLS": int(os.environ.get("AI_AGENT_MAX_TOOL_CALLS", "15")),
+    "MAX_TIME_SECONDS": float(os.environ.get("AI_AGENT_MAX_TIME_SECONDS", "60.0")),
 }

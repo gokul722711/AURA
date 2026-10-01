@@ -163,23 +163,17 @@ The repository documentation and implementation together form the project source
 
 ## Current Status
 
-**Phase:** M0 — Foundation
+**Phase:** M4 — Agent System (Complete)
 
-The repository and application foundation have been initialized and verified.
+Milestones M0 through M4 are fully implemented and verified:
 
-M0 includes:
+* **M0 Foundation**: Django backend, DRF, Next.js frontend, PostgreSQL/pgvector.
+* **M1 Model Gateway**: Provider-agnostic LLM Gateway with MockLLMProvider.
+* **M2 Basic RAG**: Ingestion, chunking, embeddings, pgvector cosine retrieval, grounded generation.
+* **M3 Advanced RAG**: Database-side threshold filtering, context budget, redundancy handling, query processing, retrieval evaluation framework.
+* **M4 Agent System**: Stateful agent runtime, deterministic MockPlanner, tool registry, authoritative security policy, safe calculator and echo tools, execution limits, structured execution events/trace, and RAG tool integration.
 
-* Django backend
-* Django REST Framework
-* Next.js frontend
-* JavaScript frontend
-* PostgreSQL configuration
-* Environment-based configuration
-* Backend health endpoint
-* Initial automated tests
-* Development tooling and repository documentation
-
-See `docs/STATUS.md` for the current implementation state.
+See `docs/STATUS.md` for detailed milestone implementation reports.
 
 ## Development Principle
 
