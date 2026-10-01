@@ -209,7 +209,7 @@ Implements:
 
 Verified:
 
-* 366/366 backend tests pass (100% offline, deterministic)
+* 367/367 backend tests pass (100% offline, deterministic)
 * System check (`python manage.py check`) passes with zero issues
 * Model migrations check (`makemigrations --check --dry-run`) passes
 * Frontend Next.js production build passes with zero TypeScript

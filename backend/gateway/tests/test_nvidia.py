@@ -155,6 +155,39 @@ class NvidiaLLMProviderTests(SimpleTestCase):
 
         self.assertEqual(resp.provider, "nvidia")
         self.assertEqual(resp.data, {"decision": "continue", "query": "latest research"})
+        call_kwargs = self.mock_client.chat.completions.create.call_args.kwargs
+        self.assertEqual(call_kwargs.get("response_format"), {"type": "json_object"})
+        self.assertEqual(
+            call_kwargs.get("extra_body"),
+            {"chat_template_kwargs": {"enable_thinking": False}},
+        )
+
+    def test_structured_output_sends_chat_template_kwargs_disable_thinking(self) -> None:
+        """Verify structured_output passes chat_template_kwargs with enable_thinking=False."""
+        choice_mock = MagicMock()
+        choice_mock.message.content = '{"status": "ok"}'
+        choice_mock.finish_reason = "stop"
+        completion_mock = MagicMock()
+        completion_mock.choices = [choice_mock]
+        completion_mock.usage = None
+        self.mock_client.chat.completions.create.return_value = completion_mock
+
+        req = StructuredOutputRequest(
+            messages=[Message(role="user", content="Ping")],
+            schema={"properties": {"status": {"type": "string"}}},
+            max_tokens=256,
+            temperature=0.0,
+        )
+        self.provider.structured_output(req)
+
+        call_kwargs = self.mock_client.chat.completions.create.call_args.kwargs
+        self.assertEqual(
+            call_kwargs.get("extra_body"),
+            {"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        self.assertEqual(call_kwargs.get("response_format"), {"type": "json_object"})
+        self.assertEqual(call_kwargs.get("max_tokens"), 256)
+        self.assertEqual(call_kwargs.get("temperature"), 0.0)
 
     def test_structured_output_invalid_json_raises_generation_error(self) -> None:
         choice_mock = MagicMock()

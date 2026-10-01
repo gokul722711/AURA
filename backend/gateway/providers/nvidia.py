@@ -162,6 +162,11 @@ class NvidiaLLMProvider(LLMProvider):
             "model": model,
             "messages": messages,
             "response_format": {"type": "json_object"},
+            "extra_body": {
+                "chat_template_kwargs": {
+                    "enable_thinking": False,
+                }
+            },
         }
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
