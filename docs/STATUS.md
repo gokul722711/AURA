@@ -2,9 +2,9 @@
 
 ## Current Phase
 
-**M6 — Research Result & Evidence Quality: COMPLETE**
+**M7 — Research API + Minimal Frontend Integration: COMPLETE**
 
-**Next: M7 — Evaluation**
+**Next: M8 — Evaluation**
 
 ---
 
@@ -242,6 +242,34 @@ Verified:
 
 ---
 
+## M7 — Research API + Minimal Frontend Integration
+
+**Status: COMPLETE**
+
+### Objective
+
+Expose the existing AURA M5/M6 autonomous research capability through a minimal Django REST API and Next.js frontend, proving the complete end-to-end user-facing flow.
+
+Implements:
+
+* **Backend Research Endpoint** (`POST /api/research/`): Synchronous DRF endpoint implemented via `ResearchView` in `backend/agent/views.py` and routed via `backend/agent/urls.py`. Validates input (presence, string type, non-whitespace).
+* **Canonical ResearchResult Serialization**: Exposes canonical structured `ResearchResult` including objective, final grounded answer, chunk-level evidence, aggregated sources, canonical citations, queries, iteration count, grounding status (`is_grounded`, `has_evidence`), execution status, duration (`duration_ms`), and execution errors.
+* **Security & Credential Sanitization** (`backend/agent/security.py`): Robust sanitization preventing leakage of configured API keys, token patterns (`nvapi-...`, `sk-...`, `Bearer ...`), URI passwords, or Python tracebacks across results and error responses.
+* **Next.js Frontend Integration** (`frontend/src/app/page.jsx`, `frontend/src/app/globals.css`): Provider-agnostic minimal research UI using 100% JavaScript/JSX (zero TypeScript) and vanilla CSS dark glassmorphism aesthetic. Includes AURA header, objective input textarea, sample suggestion buttons, loading indicator with status text, structured error banner, execution summary badges, final answer container, aggregated sources grid, and chunk-level evidence cards with canonical citations.
+* **API Proxy Configuration** (`frontend/next.config.mjs`): Server-side rewrite rule proxying `/api/:path*` to Django backend without cross-origin issues or additional dependencies.
+* **Deterministic Automated Tests** (`backend/agent/tests/test_api.py`): 10 comprehensive unit and integration tests verifying valid requests, input validation (missing, empty, whitespace-only, non-string, non-dict), result serialization, failure responses, secret non-exposure, and end-to-end research execution with scripted provider.
+
+Verified:
+
+* 393/393 backend tests pass (100% offline, deterministic)
+* System check (`python manage.py check`) passes with zero issues
+* Model migrations check (`makemigrations --check`) passes with zero changes
+* Frontend Next.js production build passes with zero TypeScript
+* `git diff --check` passes with zero issues
+* Zero secrets committed
+
+---
+
 ## Development Roadmap
 
 ```text
@@ -252,9 +280,10 @@ M3  Advanced RAG                        COMPLETE
 M4  Agent System                        COMPLETE
 M5  Autonomous Research                 COMPLETE
 M6  Research Result & Evidence Quality  COMPLETE
-M7  Evaluation                          NEXT
-M8  Local/Open Model Expansion
-M9  Deployment
+M7  Research API + Minimal Frontend     COMPLETE
+M8  Evaluation                          NEXT
+M9  Local/Open Model Expansion
+M10 Deployment
 ```
 
 Milestones are incremental. Each milestone should produce a working, tested increment.

@@ -189,6 +189,7 @@ class ResearchResult:
     has_evidence: bool
     status: AgentStatus = AgentStatus.COMPLETED
     duration_ms: float = 0.0
+    errors: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -240,6 +241,7 @@ class ResearchResult:
             "is_grounded": self.is_grounded,
             "status": status_val,
             "duration_ms": self.duration_ms,
+            "errors": list(self.errors),
             "metadata": dict(self.metadata),
         }
 
@@ -309,6 +311,12 @@ class ResearchResult:
         else:
             status = AgentStatus.COMPLETED
 
+        raw_errors = data.get("errors")
+        if isinstance(raw_errors, list):
+            errors = [str(e) for e in raw_errors if e is not None]
+        else:
+            errors = []
+
         raw_meta = data.get("metadata")
         if isinstance(raw_meta, dict):
             metadata = dict(raw_meta)
@@ -325,6 +333,7 @@ class ResearchResult:
             has_evidence=has_evidence,
             status=status,
             duration_ms=duration_ms,
+            errors=errors,
             metadata=metadata,
         )
 
@@ -370,6 +379,8 @@ class ResearchResult:
         duration_ms = sum(getattr(s, "duration_ms", 0.0) for s in step_history)
         status = getattr(state, "status", AgentStatus.COMPLETED)
         final_answer = getattr(state, "final_output", "") or ""
+        raw_state_errors = getattr(state, "errors", [])
+        errors = [str(e) for e in raw_state_errors if e is not None] if isinstance(raw_state_errors, list) else []
         raw_state_meta = getattr(state, "metadata", {})
         metadata = dict(raw_state_meta) if isinstance(raw_state_meta, dict) else {}
 
@@ -383,6 +394,7 @@ class ResearchResult:
             has_evidence=len(evidence) > 0,
             status=status,
             duration_ms=duration_ms,
+            errors=errors,
             metadata=metadata,
         )
 
