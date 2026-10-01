@@ -163,15 +163,16 @@ The repository documentation and implementation together form the project source
 
 ## Current Status
 
-**Phase:** M4 — Agent System (Complete)
+**Phase:** M5 — Autonomous Research (Complete)
 
-Milestones M0 through M4 are fully implemented and verified:
+Milestones M0 through M5 are fully implemented and verified:
 
 * **M0 Foundation**: Django backend, DRF, Next.js frontend, PostgreSQL/pgvector.
 * **M1 Model Gateway**: Provider-agnostic LLM Gateway with MockLLMProvider.
 * **M2 Basic RAG**: Ingestion, chunking, embeddings, pgvector cosine retrieval, grounded generation.
 * **M3 Advanced RAG**: Database-side threshold filtering, context budget, redundancy handling, query processing, retrieval evaluation framework.
 * **M4 Agent System**: Stateful agent runtime, deterministic MockPlanner, tool registry, authoritative security policy, safe calculator and echo tools, execution limits, structured execution events/trace, and RAG tool integration.
+* **M5 Autonomous Research**: Iterative LLM-driven research loop, OpenAI-compatible NVIDIA Nemotron provider, structured decision contracts, unique evidence accumulation, grounded final synthesis, and bounded runtime execution.
 
 See `docs/STATUS.md` for detailed milestone implementation reports.
 

@@ -15,6 +15,7 @@ class GatewayConfig:
     model: str = "mock-model"
     endpoint: str = ""
     timeout: float = 30.0
+    api_key: str = ""
     extra_config: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -35,6 +36,7 @@ class GatewayConfig:
         provider = os.environ.get("AI_PROVIDER", "mock").strip() or "mock"
         model = os.environ.get("AI_MODEL", "mock-model").strip() or "mock-model"
         endpoint = os.environ.get("AI_ENDPOINT", "").strip()
+        api_key = os.environ.get("AI_API_KEY", "").strip()
         timeout_raw = os.environ.get("AI_TIMEOUT", "30.0").strip() or "30.0"
         try:
             timeout = float(timeout_raw)
@@ -46,6 +48,7 @@ class GatewayConfig:
             model=model,
             endpoint=endpoint,
             timeout=timeout,
+            api_key=api_key,
         )
 
     @classmethod
@@ -73,12 +76,14 @@ class GatewayConfig:
         model = conf.get("MODEL", os.environ.get("AI_MODEL", "mock-model"))
         endpoint = conf.get("ENDPOINT", os.environ.get("AI_ENDPOINT", ""))
         timeout = conf.get("TIMEOUT", os.environ.get("AI_TIMEOUT", 30.0))
-        extra = {k: v for k, v in conf.items() if k not in ("PROVIDER", "MODEL", "ENDPOINT", "TIMEOUT")}
+        api_key = conf.get("API_KEY", os.environ.get("AI_API_KEY", ""))
+        extra = {k: v for k, v in conf.items() if k not in ("PROVIDER", "MODEL", "ENDPOINT", "TIMEOUT", "API_KEY")}
 
         return cls(
             provider=provider,
             model=model,
             endpoint=str(endpoint) if endpoint is not None else "",
             timeout=timeout,
+            api_key=str(api_key) if api_key is not None else "",
             extra_config=extra,
         )

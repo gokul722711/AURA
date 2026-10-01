@@ -103,6 +103,8 @@ class Plan:
 class Planner(ABC):
     """Abstract interface for planning engines."""
 
+    supports_replanning: bool = False
+
     @abstractmethod
     def plan(self, objective: str, state: AgentState) -> Plan:
         """Produce an actionable Plan for the given objective and state."""

@@ -488,7 +488,67 @@ Local/open inference can be integrated earlier when useful for testing or develo
 
 ---
 
-## 16. Core Rule
+## 16. M5 — Autonomous Research
+
+M5 establishes an iterative, LLM-driven autonomous research capability over indexed knowledge base documents.
+
+### High-Level Research Loop
+
+The agent receives a research objective and uses an iterative reasoning loop where the runtime executes steps and validates structured decisions:
+
+```text
+Research Objective
+        ↓
+    LLM Decision
+        ↓
+ CONTINUE or FINISH
+        ↓
+    RAG Search
+        ↓
+  Accumulated Evidence
+        ↓
+    LLM Decision
+        ↓
+ CONTINUE or FINISH
+        ↓
+       ...
+        ↓
+ Grounded Synthesis
+```
+
+1. **Constrained Decision Interface**: The LLM proposes an action as structured JSON:
+   - Continue with query: `{"decision": "continue", "query": "..."}`
+   - Finish: `{"decision": "finish"}`
+2. **Authority Boundary**: The LLM proposes actions; the `AgentRuntime` validates them against `ToolPolicy` and `ExecutionLimits` before executing via `StepExecutor`.
+3. **Evidence Accumulation**: Unique chunks retrieved across queries are tracked in `state.tool_results` preserving `chunk_id`, `document_title`, `document_source`, `score`, and `content`.
+4. **Grounded Final Synthesis**: At conclusion, the model synthesizes a final response strictly grounded in the accumulated evidence with source citations. If no relevant evidence is found, the agent explicitly declares insufficient evidence without fabricating facts.
+5. **Bounded Execution**: The loop terminates when the model chooses `finish`, `max_iterations` is reached, `max_tool_calls` is reached, `max_time_seconds` is reached, cancellation is requested, or an unrecoverable error occurs.
+
+### NVIDIA Provider Configuration
+
+A real OpenAI-compatible provider target is implemented in `backend/gateway/providers/nvidia.py`:
+
+* **Provider**: `nvidia`
+* **Model**: `nvidia/nemotron-3-ultra-550b-a55b`
+* **Endpoint**: `https://integrate.api.nvidia.com/v1`
+* **Key Configuration**: Read from `AI_API_KEY` environment variable. Never printed, exposed, or committed.
+* **Default Setting**: `.env.example` remains `AI_PROVIDER=mock` so fresh clones require no paid account.
+
+The provider is strictly isolated behind `LLMProvider` and `ModelGateway`. No vendor-specific code leaks into agents or tools.
+
+### M5 Non-Goals
+
+The following capabilities are explicitly out of scope for M5:
+* Web search, browser automation, or web scraping
+* Multi-agent communication architectures or LangGraph
+* Persistent cross-run research memory
+* Celery, Redis, or asynchronous workers
+* REST API endpoints or frontend research UI
+* Additional model providers (Ollama, vLLM reserved for subsequent milestones)
+
+---
+
+## 17. Core Rule
 
 > **AURA is open-model-first and LLM-agnostic.**
 

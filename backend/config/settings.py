@@ -164,6 +164,7 @@ AI_GATEWAY = {
     "MODEL": os.environ.get("AI_MODEL", "mock-model"),
     "ENDPOINT": os.environ.get("AI_ENDPOINT", ""),
     "TIMEOUT": float(os.environ.get("AI_TIMEOUT", "30.0")),
+    "API_KEY": os.environ.get("AI_API_KEY", ""),
 }
 
 # ---------------------------------------------------------------------------

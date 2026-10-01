@@ -2,9 +2,9 @@
 
 ## Current Phase
 
-**M3 — Advanced RAG: COMPLETE**
+**M5 — Autonomous Research: COMPLETE**
 
-**Next: M4 — Agent System**
+**Next: M6 — Evaluation**
 
 ---
 
@@ -187,6 +187,37 @@ Implemented:
 
 ---
 
+## M5 — Autonomous Research
+
+**Status: COMPLETE**
+
+### Objective
+
+Deliver autonomous, iterative, LLM-driven research capability grounded in the indexed knowledge base using NVIDIA Nemotron behind the Model Gateway abstraction.
+
+Implements:
+
+* **Real Provider Integration** (`backend/gateway/providers/nvidia.py`): OpenAI-compatible `NvidiaLLMProvider` targeting NVIDIA NIM (`https://integrate.api.nvidia.com/v1`, model: `nvidia/nemotron-3-ultra-550b-a55b`). Provider is completely isolated behind `LLMProvider` and `ModelGateway`. Reads API key securely from `AI_API_KEY` without logging, printing, or hardcoding secrets. Client dependency injection supports deterministic offline testing.
+* **Autonomous Research Planner** (`backend/agent/planning/research.py`): `ResearchPlanner` implementing the iterative LLM-driven research loop:
+  `Objective → LLM decision (continue with query / finish) → RAGSearchTool → Accumulated Evidence → LLM decision → ... → Grounded Final Synthesis`.
+  Enforces constrained structured JSON decisions (`{"decision": "continue", "query": "..."}` or `{"decision": "finish"}`).
+* **Evidence Accumulation**: Accumulated uniquely across queries in `state.tool_results` preserving `chunk_id`, `document_title`, `document_source`, `score`, and `content`.
+* **Grounded Final Synthesis**: Strict grounding rules ensuring the final response references supporting evidence chunks. If insufficient evidence exists in the knowledge base, the agent explicitly states this without hallucinating.
+* **Bounded Execution**: Full reuse of M4 `AgentRuntime`, `ExecutionLimits`, `LimitTracker`, `ToolPolicy`, `ExecutionTrace`, and cancellation boundaries.
+* **Factory Helper** (`backend/agent/research.py`): `create_research_runtime()` wiring `ResearchPlanner`, `RAGSearchTool`, and `AgentRuntime`.
+* **Deterministic Tests**: 22 new tests (11 provider tests in `backend/gateway/tests/test_nvidia.py` and 11 research tests in `backend/agent/tests/test_research.py`) covering all single-query, multi-query, insufficient evidence, limits, cancellation, and error cases offline without requiring network access or external API keys.
+
+Verified:
+
+* 360/360 backend tests pass (100% offline, deterministic)
+* System check (`python manage.py check`) passes with zero issues
+* Model migrations check (`makemigrations --check --dry-run`) passes
+* Frontend Next.js production build passes with zero TypeScript
+* `git diff --check` passes
+* Zero secrets in code, docs, tests, or .env.example
+
+---
+
 ## Development Roadmap
 
 ```text
@@ -195,8 +226,8 @@ M1  Model Gateway           COMPLETE
 M2  Basic RAG               COMPLETE
 M3  Advanced RAG            COMPLETE
 M4  Agent System            COMPLETE
-M5  Autonomous Research     NEXT
-M6  Evaluation
+M5  Autonomous Research     COMPLETE
+M6  Evaluation              NEXT
 M7  Local/Open Model Expansion
 M8  Deployment
 ```

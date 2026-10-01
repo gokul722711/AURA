@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from gateway.config import GatewayConfig
 from gateway.exceptions import (
@@ -25,6 +25,14 @@ from gateway.types import (
 )
 
 
+@override_settings(
+    AI_GATEWAY={
+        "PROVIDER": "mock",
+        "MODEL": "mock-model",
+        "ENDPOINT": "",
+        "TIMEOUT": 30.0,
+    }
+)
 class ModelGatewayTests(TestCase):
     """Unit tests for ModelGateway."""
 

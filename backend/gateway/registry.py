@@ -1,13 +1,17 @@
 """Provider registry for AURA Model Gateway."""
 
 
+from typing import Any
+
 from gateway.base import LLMProvider
 from gateway.config import GatewayConfig
 from gateway.exceptions import ProviderConfigurationError, ProviderUnavailableError
 from gateway.providers.mock import MockLLMProvider
+from gateway.providers.nvidia import NvidiaLLMProvider
 
 _REGISTRY: dict[str, type[LLMProvider]] = {
     "mock": MockLLMProvider,
+    "nvidia": NvidiaLLMProvider,
 }
 
 
@@ -46,6 +50,17 @@ def create_provider(config: GatewayConfig) -> LLMProvider:
     """Instantiate the configured provider from a GatewayConfig."""
     provider_cls = get_provider_class(config.provider)
     try:
+        if config.provider.lower().strip() == "nvidia":
+            kwargs: dict[str, Any] = {
+                "model": config.model,
+                "timeout": config.timeout,
+            }
+            if config.endpoint:
+                kwargs["endpoint"] = config.endpoint
+            if config.api_key:
+                kwargs["api_key"] = config.api_key
+            return provider_cls(**kwargs)
+
         # Standard instantiation passing model
         return provider_cls(model=config.model)
     except Exception as exc:

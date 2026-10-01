@@ -167,6 +167,24 @@ class AgentRuntime:
                 state.iteration = tracker.iterations
 
                 step = plan.get_step(state.current_step_index)
+                if step is None and getattr(self.planner, "supports_replanning", False):
+                    # Planner supports dynamic replanning based on accumulated state
+                    new_plan = self.planner.plan(objective, state)
+                    if new_plan is not None and len(new_plan.steps) > 0:
+                        plan = new_plan
+                        state.plan = plan
+                        state.current_step_index = 0
+                        step = plan.get_step(0)
+                        steps_payload = [
+                            {
+                                "step_id": s.step_id,
+                                "action_type": s.action_type.value,
+                                "description": s.description,
+                            }
+                            for s in plan.steps
+                        ]
+                        trace.emit(plan_created(state.run_id, plan.plan_id, len(plan), steps_payload))
+
                 if step is None:
                     # Plan finished all steps without explicit FINISH step
                     state.transition_to(AgentStatus.COMPLETED)
