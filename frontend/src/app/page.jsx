@@ -30,6 +30,8 @@ export default function Home() {
       ? `${process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, "")}/api/research/`
       : "/api/research/";
 
+    console.log("Research API URL:", apiUrl);
+
     try {
       const response = await fetch(apiUrl, {
         method: "POST",
@@ -39,7 +41,16 @@ export default function Home() {
         body: JSON.stringify({ objective: trimmed }),
       });
 
-      const data = await response.json();
+      const contentType = response.headers.get("content-type") || "";
+      let data = {};
+      if (contentType.includes("application/json")) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(
+          `Server returned HTTP ${response.status}: ${text.slice(0, 120)}`
+        );
+      }
 
       if (!response.ok) {
         const errorDetail =
@@ -108,8 +119,8 @@ export default function Home() {
                   {idx === 0
                     ? "Architecture Overview"
                     : idx === 1
-                    ? "Citation Integrity"
-                    : "Security & Sandbox"}
+                      ? "Citation Integrity"
+                      : "Security & Sandbox"}
                 </button>
               ))}
             </div>
@@ -167,18 +178,16 @@ export default function Home() {
             {/* Meta Summary Bar */}
             <div className="meta-summary-bar">
               <span
-                className={`badge ${
-                  result.status === "completed"
+                className={`badge ${result.status === "completed"
                     ? "badge-completed"
                     : "badge-failed"
-                }`}
+                  }`}
               >
                 ● Status: {result.status}
               </span>
               <span
-                className={`badge ${
-                  result.is_grounded ? "badge-grounded" : "badge-ungrounded"
-                }`}
+                className={`badge ${result.is_grounded ? "badge-grounded" : "badge-ungrounded"
+                  }`}
               >
                 {result.is_grounded
                   ? "✓ Grounded in Evidence"

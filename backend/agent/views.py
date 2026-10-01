@@ -1,7 +1,7 @@
 """API views for AURA agent and research."""
 
 import logging
-from typing import Any, Callable
+from typing import Any
 
 from rest_framework import status
 from rest_framework.request import Request
@@ -24,11 +24,10 @@ class ResearchView(APIView):
 
     authentication_classes = []
     permission_classes = []
-    runtime_factory: Callable[[], ResearchRuntime] = create_research_runtime
 
     def get_runtime(self) -> ResearchRuntime:
         """Create or return the configured ResearchRuntime instance."""
-        return self.runtime_factory()
+        return create_research_runtime()
 
     def post(self, request: Request) -> Response:
         """Execute autonomous research synchronously."""

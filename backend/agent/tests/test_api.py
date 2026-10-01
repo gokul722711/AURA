@@ -320,3 +320,76 @@ class ResearchAPITests(TestCase):
             self.assertGreaterEqual(len(data["evidence"]), 1)
             self.assertEqual(data["queries"], ["Model Gateway and RAG"])
             self.assertIn("Model Gateway routes requests", data["final_answer"])
+
+    def test_post_trailing_slash_route_requirement(self) -> None:
+        """POST to /api/research/ succeeds while POST to /api/research triggers APPEND_SLASH behavior."""
+        mock_result = ResearchResult(
+            objective="Trailing slash test",
+            final_answer="Answer with valid slash.",
+            evidence=[],
+            sources=[],
+            queries=[],
+            iteration_count=1,
+            has_evidence=False,
+            status=AgentStatus.COMPLETED,
+        )
+        with patch.object(ResearchView, "get_runtime") as mock_get_runtime:
+            mock_runtime = MagicMock()
+            mock_runtime.run_research.return_value = mock_result
+            mock_get_runtime.return_value = mock_runtime
+
+            # Trailing-slash route succeeds as expected by Django/DRF
+            res_with_slash = self.client.post(
+                "/api/research/",
+                {"objective": "Trailing slash test"},
+                format="json",
+            )
+            self.assertEqual(res_with_slash.status_code, 200)
+
+        # Without trailing slash, Django with APPEND_SLASH=True cannot redirect POST data
+        # so it either raises RuntimeError or returns 500/301/404
+        try:
+            res_without_slash = self.client.post(
+                "/api/research",
+                {"objective": "Trailing slash test"},
+                format="json",
+            )
+            self.assertIn(res_without_slash.status_code, (301, 404, 500))
+        except RuntimeError as exc:
+            self.assertIn("APPEND_SLASH", str(exc))
+
+    def test_research_view_wiring_constructs_runtime_with_model_gateway(self) -> None:
+        """ResearchView.get_runtime() constructs ResearchRuntime with ModelGateway, not ResearchView."""
+        view = ResearchView()
+        runtime = view.get_runtime()
+        self.assertIsInstance(runtime, ResearchRuntime)
+        self.assertIsInstance(runtime.planner.gateway, ModelGateway)
+        self.assertNotIsInstance(runtime.planner.gateway, ResearchView)
+
+    def test_api_request_reaches_structured_decision_path(self) -> None:
+        """API request without patching get_runtime reaches gateway structured_output decision path."""
+        scripted_provider = ScriptedLLMProvider(
+            responses=[
+                json.dumps({"decision": "finish"}),
+                "Direct synthesis answering the objective.",
+            ]
+        )
+        custom_gateway = ModelGateway(provider=scripted_provider)
+
+        # Patch get_gateway so create_research_runtime uses custom_gateway;
+        # ResearchView.get_runtime itself is NOT mocked.
+        with patch("agent.research.get_gateway", return_value=custom_gateway):
+            response = self.client.post(
+                self.url,
+                {"objective": "Direct gateway wiring test"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["status"], "completed")
+            self.assertIn("The available knowledge base did not provide sufficient supporting evidence", data["final_answer"])
+            self.assertGreaterEqual(len(scripted_provider.recorded_structured_requests), 1)
+            self.assertEqual(
+                scripted_provider.recorded_structured_requests[0].schema.get("properties", {}).get("decision", {}).get("enum"),
+                ["continue", "finish"],
+            )
