@@ -2,9 +2,9 @@
 
 ## Current Phase
 
-**M2 — Basic RAG: COMPLETE**
+**M3 — Advanced RAG: COMPLETE**
 
-**Next: M3 — Advanced RAG**
+**Next: M4 — Agent System**
 
 ---
 
@@ -97,6 +97,31 @@ Verified:
 * `git diff --check` passes with zero whitespace issues
 * Zero vendor LLM/embedding SDK dependencies introduced
 
+### M3 — Advanced RAG
+
+Retrieval pipeline correctness, configurability, and measurability improvements. No agent system, no hybrid search, no reranking, no external model calls.
+
+Implemented:
+
+* **Retrieval correctness**: Similarity threshold filtering applied database-side BEFORE top-K slicing, ensuring K qualifying results are returned when K or more exist. Deterministic tie-breaking using `(distance ASC, pk ASC)` ordering.
+* **Retrieval result contract**: Enriched `RetrievalResult` exposing `chunk_id`, `document_id`, `content`, `score`, `rank`, `chunk_index`, `document_title`, `document_source`, `start_offset`, `end_offset`, `chunk_metadata`, and backward-compatible `chunk` field.
+* **Query processing**: Deterministic, provider-independent `process_query()` with whitespace trimming, repeated whitespace normalization, empty query validation. Original query preserved separately from normalized retrieval query. No LLM calls.
+* **Context optimization**: Configurable context budget (`CONTEXT_MAX_CHARS`) via `ContextConfig`. Context assembler preserves retrieval ranking, includes highest-ranked results first, stops when budget is exhausted, retains source/chunk attribution, and handles overlapping-chunk redundancy via character offset comparison. No learned reranker.
+* **Explicit no-context behavior**: `RAGResponse.has_context` flag distinguishes context-grounded from ungrounded responses. `metadata["context_grounded"]` makes the distinction explicit. No-context results do not appear document-grounded.
+* **RAG evaluation framework**: Under `backend/rag/evaluation/` with deterministic, LLM-independent retrieval metrics (Recall@K, Precision@K, Hit Rate@K, MRR), evaluation dataset representation (`EvaluationExample`, `EvaluationDataset`), evaluator comparing retrieved identifiers against expected relevant identifiers, and a small repository-local test dataset.
+* **Configuration**: `AI_RAG` extended with `SIMILARITY_THRESHOLD` and `CONTEXT_MAX_CHARS`. All M3 configuration centralized in Django settings.
+* **Comprehensive test suite**: 85 new tests covering retrieval correctness, query processing, context optimization, evaluation metrics, and pipeline integration.
+
+Verified:
+
+* 249/249 backend automated tests pass (164 M0–M2 + 85 M3)
+* Django system checks pass (`python manage.py check`)
+* Model migration check passes with no pending changes (`makemigrations --check --dry-run`)
+* Frontend Next.js production build passes
+* `git diff --check` passes with zero whitespace issues
+* Zero vendor LLM/embedding SDK dependencies introduced
+* No new database migrations required
+
 ---
 
 ## Current Repository State
@@ -109,6 +134,7 @@ Backend
   PostgreSQL
   Model Gateway (M1)
   Basic RAG (M2)
+  Advanced RAG (M3)
 
 Frontend
   Next.js
@@ -126,6 +152,10 @@ AI
   EmbeddingProvider abstraction implemented
   Mock embedding provider implemented
   Basic RAG pipeline implemented
+  Advanced RAG pipeline implemented
+  Query processing implemented
+  Context optimization implemented
+  RAG evaluation framework implemented
   Agent runtime planned
 ```
 
@@ -133,13 +163,13 @@ No external AI provider API or key is required.
 
 ---
 
-## M3 — Advanced RAG
+## M4 — Agent System
 
 **Status: NEXT**
 
 ### Objective
 
-Introduce hybrid retrieval, BM25 keyword search, reciprocal rank fusion, reranking, and query expansion.
+Introduce agent runtime with explicit, stateful, observable, bounded execution.
 
 ---
 
@@ -149,8 +179,8 @@ Introduce hybrid retrieval, BM25 keyword search, reciprocal rank fusion, reranki
 M0  Foundation              COMPLETE
 M1  Model Gateway           COMPLETE
 M2  Basic RAG               COMPLETE
-M3  Advanced RAG            NEXT
-M4  Agent System
+M3  Advanced RAG            COMPLETE
+M4  Agent System            NEXT
 M5  Autonomous Research
 M6  Evaluation
 M7  Local/Open Model Expansion

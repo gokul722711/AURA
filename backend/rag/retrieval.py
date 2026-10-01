@@ -12,7 +12,14 @@ This means:
 
 Higher similarity = more relevant.
 
-No approximate vector indexes (HNSW, IVFFlat) are used in M2.
+M3 correctness fix:
+  Similarity threshold filtering is applied database-side BEFORE the top-K
+  slice. This ensures that exactly K qualifying results are returned when
+  K or more exist, even if some candidates would have been filtered out.
+
+  Deterministic tie-breaking uses (distance ASC, chunk pk ASC) ordering.
+
+No approximate vector indexes (HNSW, IVFFlat) are used.
 Retrieval uses exact database-side cosine distance for correctness.
 """
 
@@ -49,14 +56,32 @@ class RetrievalResult:
     """A single retrieval result.
 
     Attributes:
-        chunk: The matched DocumentChunk instance.
+        chunk_id: UUID of the matched chunk.
+        document_id: UUID of the source document.
+        content: Text content of the chunk.
         score: Similarity score (1 - cosine_distance). Higher = more similar.
         rank: 1-based rank in the result set.
+        chunk_index: Position of this chunk within its source document (0-based).
+        document_title: Title of the source document.
+        document_source: Source origin of the document.
+        start_offset: Character start offset of this chunk in the source document.
+        end_offset: Character end offset of this chunk in the source document.
+        chunk_metadata: Metadata dictionary from the chunk record.
+        chunk: The matched DocumentChunk instance (backward compatibility with M2).
     """
 
-    chunk: DocumentChunk
+    chunk_id: str
+    document_id: str
+    content: str
     score: float
     rank: int
+    chunk_index: int
+    document_title: str
+    document_source: str
+    start_offset: int
+    end_offset: int
+    chunk_metadata: dict
+    chunk: DocumentChunk
 
 
 def _get_retrieval_config() -> RetrievalConfig:
@@ -64,6 +89,7 @@ def _get_retrieval_config() -> RetrievalConfig:
     rag_settings = getattr(settings, "AI_RAG", {})
     return RetrievalConfig(
         top_k=rag_settings.get("TOP_K", 5),
+        similarity_threshold=rag_settings.get("SIMILARITY_THRESHOLD", 0.0),
     )
 
 
@@ -75,7 +101,13 @@ def retrieve_chunks(
     """Retrieve the most similar document chunks for a query.
 
     Embeds the query, then performs exact cosine distance search in PostgreSQL
-    using pgvector. Results are ordered by similarity (highest first).
+    using pgvector. Results are ordered by similarity (highest first) with
+    deterministic tie-breaking by chunk primary key.
+
+    M3 correctness:
+      Similarity threshold filtering is applied database-side BEFORE
+      the top-K slice. This means the full set of qualifying candidates
+      is considered, and then the top K are selected from that set.
 
     Args:
         query: The search query text.
@@ -99,24 +131,41 @@ def retrieve_chunks(
     except Exception as exc:
         raise RetrievalError(f"Failed to embed query: {exc}") from exc
 
-    # Only search chunks from documents with 'ready' status
+    # Build queryset: annotate with distance, filter ready documents
     queryset = DocumentChunk.objects.filter(
         document__status="ready"
     ).annotate(
         distance=CosineDistance("embedding", query_embedding)
-    ).order_by("distance")[: config.top_k]
+    )
+
+    # M3: Apply threshold filtering BEFORE top-K slice.
+    # similarity = 1 - distance, so threshold T means distance <= 1 - T.
+    if config.similarity_threshold > 0.0:
+        max_distance = 1.0 - config.similarity_threshold
+        queryset = queryset.filter(distance__lte=max_distance)
+
+    # Deterministic ordering: by distance ASC (best first), then pk ASC for tie-breaking
+    queryset = queryset.order_by("distance", "pk")[: config.top_k]
 
     results = []
     for rank, chunk in enumerate(queryset, start=1):
         # Convert cosine distance to similarity: similarity = 1 - distance
         similarity = 1.0 - chunk.distance
-        if similarity >= config.similarity_threshold:
-            results.append(
-                RetrievalResult(
-                    chunk=chunk,
-                    score=similarity,
-                    rank=rank,
-                )
+        results.append(
+            RetrievalResult(
+                chunk_id=str(chunk.pk),
+                document_id=str(chunk.document_id),
+                content=chunk.content,
+                score=similarity,
+                rank=rank,
+                chunk_index=chunk.chunk_index,
+                document_title=chunk.document.title,
+                document_source=chunk.document.source,
+                start_offset=chunk.start_offset,
+                end_offset=chunk.end_offset,
+                chunk_metadata=chunk.metadata or {},
+                chunk=chunk,
             )
+        )
 
     return results

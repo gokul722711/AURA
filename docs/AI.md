@@ -165,7 +165,7 @@ Defined in `backend/rag/embeddings/mock.py`:
 
 ## 7. RAG Architecture
 
-The Basic RAG pipeline (M2) implements the end-to-end flow:
+The RAG pipeline (M2 + M3) implements the end-to-end flow:
 
 ```text
 Document
@@ -178,13 +178,15 @@ EmbeddingProvider
    ↓
 PostgreSQL / pgvector
    ↓
-Cosine Distance Retrieval
+Query Processing (M3)
    ↓
-Context Assembly
+Cosine Distance Retrieval (M3: threshold before top-K)
+   ↓
+Context Assembly (M3: budget + redundancy handling)
    ↓
 ModelGateway
    ↓
-RAG Response
+RAG Response (M3: explicit no-context indicator)
 ```
 
 ### 1. Documents & Data Model
@@ -206,7 +208,17 @@ Defined in `backend/rag/models.py`:
   - Atomically bulk-persists `DocumentChunk` records inside a `transaction.atomic()` block.
   - Transitions document status to `ready` upon success, or `error` with rollback on failure, preventing partial persistence.
 
-### 3. Vector Retrieval
+### 3. Query Processing (M3)
+
+Defined in `backend/rag/query_processing.py`:
+
+* Deterministic, provider-independent query normalization.
+* Trims surrounding whitespace, normalizes repeated internal whitespace to single spaces.
+* Validates that the result is non-empty.
+* Returns `ProcessedQuery` with both `original` (unmodified) and `normalized` (for retrieval) forms.
+* Does NOT call any LLM or external model.
+
+### 4. Vector Retrieval
 
 Defined in `backend/rag/retrieval.py`:
 
@@ -214,29 +226,61 @@ Defined in `backend/rag/retrieval.py`:
 * Executes database-side exact cosine distance calculation using `pgvector.django.CosineDistance("embedding", query_embedding)`.
 * Filters only chunks from documents with `status="ready"`.
 * Computes normalized similarity scores: `similarity = 1.0 - distance`.
-* Applies `top_k` limiting (default 5) and optional `similarity_threshold` filtering.
-* No approximate vector indexes (HNSW, IVFFlat) are used in M2 to ensure exact retrieval.
+* **M3 correctness**: Similarity threshold filtering is applied database-side BEFORE the top-K slice, ensuring K qualifying results are returned when K or more exist.
+* **M3 determinism**: Deterministic tie-breaking using `(distance ASC, pk ASC)` ordering.
+* **M3 result contract**: Enriched `RetrievalResult` exposes `chunk_id`, `document_id`, `content`, `score`, `rank`, `chunk_index`, `document_title`, `document_source`, `start_offset`, `end_offset`, `chunk_metadata`, and backward-compatible `chunk` field.
+* Configurable via `AI_RAG["TOP_K"]` (default 5) and `AI_RAG["SIMILARITY_THRESHOLD"]` (default 0.0).
+* No approximate vector indexes (HNSW, IVFFlat) are used to ensure exact retrieval.
 
-### 4. Context Assembly
+### 5. Context Assembly
 
 Defined in `backend/rag/context.py`:
 
 * Formats retrieved chunks into a structured prompt block with clear boundary markers.
 * Preserves chunk metadata (document title/source, chunk index, similarity score).
+* **M3 budget**: Configurable `CONTEXT_MAX_CHARS` budget. Includes highest-ranked results first, stops when budget is exhausted. `None` means no limit (M2 behavior).
+* **M3 redundancy**: Deterministic overlapping-chunk redundancy handling. Skips chunks whose character span is fully contained within an already-included chunk from the same document.
 * Handles empty retrieval gracefully by prompting the model to indicate absence of relevant context.
 
-### 5. Grounded Generation via Model Gateway
+### 6. Grounded Generation via Model Gateway
 
 Defined in `backend/rag/pipeline.py`:
 
-* `RAGPipeline.query(question, config)` orchestrates the full retrieve-assemble-generate workflow.
+* `RAGPipeline.query(question, config)` orchestrates the full process-retrieve-assemble-generate workflow.
 * Generation **must** go through `ModelGateway.generate()`. RAG components never directly call an LLM provider or vendor SDK.
+* **M3 query processing**: Applies `process_query()` to normalize the query before retrieval.
+* **M3 no-context behavior**: `RAGResponse.has_context` distinguishes context-grounded from ungrounded responses. `metadata["context_grounded"]` makes this explicit. No-context responses do not appear document-grounded.
 * Returns a structured `RAGResponse` containing:
   - Generated answer text
   - Source citations (`RetrievalResult` records)
-  - Original query
+  - Original query and `ProcessedQuery` (M3)
+  - `has_context` flag (M3)
   - Token usage info (`prompt_tokens`, `completion_tokens`, `total_tokens`)
-  - Execution metadata (provider, model, finish reason, retrieval count)
+  - Execution metadata (provider, model, finish reason, retrieval count, context_grounded)
+
+### 7. RAG Evaluation Framework (M3)
+
+Defined in `backend/rag/evaluation/`:
+
+* **Metrics** (`metrics.py`): Deterministic, LLM-independent retrieval quality metrics — Recall@K, Precision@K, Hit Rate@K, MRR. Compare retrieved identifiers against expected relevant identifiers.
+* **Dataset** (`dataset.py`): `EvaluationExample` (query + relevant IDs) and `EvaluationDataset` (named collection of examples). Frozen, immutable representations.
+* **Evaluator** (`evaluator.py`): Runs evaluation examples through the retrieval pipeline, computes per-example and aggregate metrics. Does NOT use an LLM.
+* **Test dataset** (`test_dataset.py`): Small, repository-local deterministic dataset for testing framework mechanics. Does NOT claim meaningful semantic retrieval quality with MockEmbeddingProvider.
+
+### 8. RAG Configuration
+
+Centralized in Django `settings.AI_RAG`:
+
+```text
+CHUNK_SIZE          Default 512
+CHUNK_OVERLAP       Default 50
+TOP_K               Default 5
+SIMILARITY_THRESHOLD Default 0.0  (M3)
+CONTEXT_MAX_CHARS   Default None  (M3, no limit)
+```
+
+All configuration is environment-variable driven via `AI_RAG_*` prefixed variables.
+
 
 ---
 
@@ -413,6 +457,15 @@ Grounded Generation
 
 M3
 Advanced RAG
+    ↓
+Query Processing
+    ↓
+Retrieval Correctness
+    ↓
+Context Optimization
+    ↓
+Evaluation Framework
+
 
 M4
 Agent Runtime

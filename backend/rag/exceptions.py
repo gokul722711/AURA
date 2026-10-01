@@ -35,3 +35,15 @@ class ContextAssemblyError(RAGError):
     """Raised when context assembly for the LLM prompt fails."""
 
     pass
+
+
+class QueryProcessingError(RAGError):
+    """Raised when query processing/normalization fails."""
+
+    pass
+
+
+class EvaluationError(RAGError):
+    """Raised when RAG evaluation fails."""
+
+    pass

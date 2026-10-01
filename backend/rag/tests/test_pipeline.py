@@ -1,7 +1,14 @@
 """Tests for the RAG pipeline.
 
-Tests the full RAG flow: query → retrieve → assemble → ModelGateway.generate() → response.
+Tests the full RAG flow: query → process → retrieve → assemble → ModelGateway.generate() → response.
 Uses MockLLMProvider and MockEmbeddingProvider — no external APIs required.
+
+M3 tests cover:
+- Query processing integration
+- Context-present behavior (has_context=True)
+- No-context behavior (has_context=False, context_grounded=False)
+- Context budget integration
+- Continued use of ModelGateway
 """
 
 from django.test import TestCase
@@ -10,6 +17,7 @@ from gateway.gateway import ModelGateway
 from gateway.providers.mock import MockLLMProvider
 
 from rag.chunking import ChunkingConfig
+from rag.context import ContextConfig
 from rag.embeddings.mock import MockEmbeddingProvider
 from rag.ingestion import ingest_document
 from rag.pipeline import RAGConfig, RAGPipeline, RAGResponse
@@ -113,6 +121,58 @@ class RAGPipelineTests(TestCase):
         self.assertIsInstance(response.usage, dict)
         self.assertIsInstance(response.metadata, dict)
 
+    # --- M3 tests: pipeline enhancements ---
+
+    def test_response_has_processed_query(self):
+        """M3: Response should contain the processed query."""
+        response = self.pipeline.query("  What  is   Python?  ")
+        self.assertEqual(response.processed_query.original, "  What  is   Python?  ")
+        self.assertEqual(response.processed_query.normalized, "What is Python?")
+
+    def test_context_present_has_context_true(self):
+        """M3: When documents exist and are retrieved, has_context is True."""
+        response = self.pipeline.query("Python programming")
+        # The test document is ingested and ready, so we should have context
+        if response.sources:
+            self.assertTrue(response.has_context)
+            self.assertTrue(response.metadata["context_grounded"])
+
+    def test_no_context_has_context_false(self):
+        """M3: When no documents exist, has_context is False."""
+        from rag.models import Document
+        Document.objects.all().delete()
+
+        response = self.pipeline.query("nonexistent topic")
+        self.assertFalse(response.has_context)
+        self.assertFalse(response.metadata["context_grounded"])
+        self.assertEqual(len(response.sources), 0)
+
+    def test_no_context_response_not_grounded(self):
+        """M3: No-context result should not appear as document-grounded."""
+        from rag.models import Document
+        Document.objects.all().delete()
+
+        response = self.pipeline.query("something")
+        self.assertFalse(response.has_context)
+        self.assertEqual(response.metadata["retrieval_count"], 0)
+        self.assertFalse(response.metadata["context_grounded"])
+
+    def test_context_config_integration(self):
+        """M3: Context budget config should be respected through pipeline."""
+        config = RAGConfig(
+            retrieval_config=RetrievalConfig(top_k=10),
+            context_config=ContextConfig(max_chars=50),
+        )
+        response = self.pipeline.query("Python language", config=config)
+        self.assertIsInstance(response, RAGResponse)
+
+    def test_gateway_always_used(self):
+        """M3: Generation must always go through ModelGateway."""
+        response = self.pipeline.query("gateway test")
+        # Mock provider signature in the response
+        self.assertIn("Mock response to:", response.answer)
+        self.assertEqual(response.metadata["provider"], "mock")
+
 
 class RAGConfigTests(TestCase):
     """Tests for RAGConfig."""
@@ -122,13 +182,16 @@ class RAGConfigTests(TestCase):
         self.assertIsNotNone(config.system_prompt)
         self.assertEqual(config.temperature, 0.1)
         self.assertIsNone(config.max_tokens)
+        self.assertIsNotNone(config.context_config)
 
     def test_custom_config(self):
         config = RAGConfig(
             retrieval_config=RetrievalConfig(top_k=3),
+            context_config=ContextConfig(max_chars=1000),
             temperature=0.7,
             max_tokens=500,
         )
         self.assertEqual(config.retrieval_config.top_k, 3)
+        self.assertEqual(config.context_config.max_chars, 1000)
         self.assertEqual(config.temperature, 0.7)
         self.assertEqual(config.max_tokens, 500)

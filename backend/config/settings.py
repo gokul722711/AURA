@@ -185,4 +185,10 @@ AI_RAG = {
     "CHUNK_SIZE": int(os.environ.get("AI_RAG_CHUNK_SIZE", "512")),
     "CHUNK_OVERLAP": int(os.environ.get("AI_RAG_CHUNK_OVERLAP", "50")),
     "TOP_K": int(os.environ.get("AI_RAG_TOP_K", "5")),
+    "SIMILARITY_THRESHOLD": float(os.environ.get("AI_RAG_SIMILARITY_THRESHOLD", "0.0")),
+    "CONTEXT_MAX_CHARS": (
+        int(os.environ.get("AI_RAG_CONTEXT_MAX_CHARS"))
+        if os.environ.get("AI_RAG_CONTEXT_MAX_CHARS")
+        else None
+    ),
 }

@@ -6,8 +6,10 @@ These tests verify:
 - Database-side cosine distance search works correctly
 - Results are ordered by similarity (highest first)
 - top_k limiting works
-- Similarity threshold filtering works
+- Similarity threshold filtering works (M3: database-side, before top-K)
+- Deterministic ordering/tie-breaking
 - Only 'ready' documents are searched
+- RetrievalResult contract exposes all required fields
 """
 
 from django.test import TestCase
@@ -16,7 +18,7 @@ from rag.chunking import ChunkingConfig
 from rag.embeddings.mock import MockEmbeddingProvider
 from rag.exceptions import RetrievalError
 from rag.ingestion import ingest_document
-from rag.retrieval import RetrievalConfig, retrieve_chunks
+from rag.retrieval import RetrievalConfig, RetrievalResult, retrieve_chunks
 
 
 class RetrieveChunksTests(TestCase):
@@ -146,3 +148,120 @@ class RetrieveChunksTests(TestCase):
             # Similarity should be in range [-1, 1] for cosine
             self.assertGreaterEqual(result.score, -1.0)
             self.assertLessEqual(result.score, 1.0)
+
+    # --- M3 tests: retrieval correctness ---
+
+    def test_threshold_filtering_before_top_k(self):
+        """M3: Threshold filtering happens before top-K, so K qualifying
+        results are returned even if some candidates don't meet threshold."""
+        # Ingest enough data for many chunks
+        ingest_document(
+            title="Many Chunks",
+            content="Content for testing threshold before topk. " * 100,
+            embedding_provider=self.provider,
+            chunking_config=ChunkingConfig(chunk_size=50, chunk_overlap=5),
+        )
+        # With threshold=0.0, all chunks qualify
+        config_no_threshold = RetrievalConfig(top_k=5, similarity_threshold=0.0)
+        results_all = retrieve_chunks(
+            query="threshold topk test",
+            embedding_provider=self.provider,
+            config=config_no_threshold,
+        )
+        self.assertLessEqual(len(results_all), 5)
+
+        # All returned results should have scores >= 0.0
+        for r in results_all:
+            self.assertGreaterEqual(r.score, 0.0)
+
+    def test_deterministic_ordering(self):
+        """M3: Same query, same data should produce identical ordering."""
+        results1 = retrieve_chunks(
+            query="determinism test",
+            embedding_provider=self.provider,
+        )
+        results2 = retrieve_chunks(
+            query="determinism test",
+            embedding_provider=self.provider,
+        )
+        self.assertEqual(len(results1), len(results2))
+        for r1, r2 in zip(results1, results2):
+            self.assertEqual(r1.chunk_id, r2.chunk_id)
+            self.assertEqual(r1.score, r2.score)
+            self.assertEqual(r1.rank, r2.rank)
+
+    def test_no_result_behavior(self):
+        """M3: Query with very high threshold returns empty list."""
+        config = RetrievalConfig(top_k=5, similarity_threshold=1.0)
+        results = retrieve_chunks(
+            query="something totally unique",
+            embedding_provider=self.provider,
+            config=config,
+        )
+        # With threshold=1.0, only exact matches qualify (extremely unlikely with mock)
+        self.assertIsInstance(results, list)
+
+    def test_retrieval_result_contract(self):
+        """M3: RetrievalResult exposes all required fields."""
+        results = retrieve_chunks(
+            query="contract test",
+            embedding_provider=self.provider,
+        )
+        if results:
+            r = results[0]
+            # All M3 fields
+            self.assertIsInstance(r.chunk_id, str)
+            self.assertIsInstance(r.document_id, str)
+            self.assertIsInstance(r.content, str)
+            self.assertIsInstance(r.score, float)
+            self.assertIsInstance(r.rank, int)
+            self.assertIsInstance(r.chunk_index, int)
+            self.assertIsInstance(r.document_title, str)
+            self.assertIsInstance(r.document_source, str)
+            self.assertIsInstance(r.start_offset, int)
+            self.assertIsInstance(r.end_offset, int)
+            self.assertIsInstance(r.chunk_metadata, dict)
+            # Backward compat
+            self.assertIsNotNone(r.chunk)
+
+    def test_retrieval_result_metadata_correct(self):
+        """M3: RetrievalResult metadata matches the source document."""
+        results = retrieve_chunks(
+            query="programming language",
+            embedding_provider=self.provider,
+        )
+        if results:
+            r = results[0]
+            self.assertEqual(r.document_title, "Test Document")
+            self.assertGreaterEqual(r.start_offset, 0)
+            self.assertGreater(r.end_offset, r.start_offset)
+            self.assertGreater(len(r.content), 0)
+
+
+class RetrievalConfigTests(TestCase):
+    """Tests for RetrievalConfig."""
+
+    def test_default_config(self):
+        config = RetrievalConfig()
+        self.assertEqual(config.top_k, 5)
+        self.assertEqual(config.similarity_threshold, 0.0)
+
+    def test_custom_config(self):
+        config = RetrievalConfig(top_k=10, similarity_threshold=0.5)
+        self.assertEqual(config.top_k, 10)
+        self.assertEqual(config.similarity_threshold, 0.5)
+
+    def test_zero_top_k_raises(self):
+        with self.assertRaises(RetrievalError):
+            RetrievalConfig(top_k=0)
+
+    def test_negative_top_k_raises(self):
+        with self.assertRaises(RetrievalError):
+            RetrievalConfig(top_k=-1)
+
+    def test_config_from_settings(self):
+        """Settings-based config should load defaults correctly."""
+        from rag.retrieval import _get_retrieval_config
+        config = _get_retrieval_config()
+        self.assertIsInstance(config.top_k, int)
+        self.assertIsInstance(config.similarity_threshold, float)

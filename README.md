@@ -2,7 +2,7 @@
 
 **Autonomous Research & Engineering Agent**
 
-AURA is an LLM-agnostic agentic AI platform designed to handle complex research and engineering objectives through planning, retrieval, tool use, synthesis, evaluation, and iterative improvement.
+AURA is an **open-model-first, LLM-agnostic agentic AI platform** designed to handle complex research and engineering objectives through planning, retrieval, tool use, synthesis, evaluation, and iterative improvement.
 
 ## Vision
 
@@ -31,7 +31,9 @@ Given a complex objective, AURA should be able to:
 
 * React
 * Next.js
-* TypeScript
+* JavaScript
+
+**TypeScript is not used in AURA.**
 
 ### Data & Infrastructure
 
@@ -47,39 +49,70 @@ Given a complex objective, AURA should be able to:
 * Agent workflows
 * LangGraph
 * Selective LangChain integrations
+* Open/local model inference
 
-The initial LLM provider is OpenAI. Future versions will support local and other hosted models without requiring changes to the core application architecture.
+AURA does not depend on a specific LLM vendor or inference provider.
+
+Potential model and inference targets include:
+
+* NVIDIA NIM
+* Ollama
+* vLLM
+* Other OpenAI-compatible inference servers
+* Other local/self-hosted models
+* Hosted model providers
+
+These providers are accessed through internal abstractions so that changing the model or inference system does not require changes to the core application architecture.
 
 ## Architecture
 
 ```text
 Next.js / React
-       │
-       ▼
+      │
+      ▼
 Django REST API
-       │
-       ├── Projects
-       ├── Documents
-       ├── Tasks
-       ├── Agent Runs
-       └── Evaluations
-              │
-              ▼
-        Agent Runtime
-              │
-       ┌──────┼──────┐
-       ▼      ▼      ▼
-      RAG    Tools   LLM
-       │              │
-       ▼              ▼
- PostgreSQL       LLM Provider
- + pgvector       Abstraction
-       │
-       ▼
-     Redis
+      │
+      ├── Projects
+      ├── Documents
+      ├── Tasks
+      ├── Agent Runs
+      └── Evaluations
+             │
+             ▼
+       Agent Runtime
+             │
+      ┌──────┼──────┐
+      ▼      ▼      ▼
+     RAG    Tools   LLM Gateway
+      │              │
+      ▼              ▼
+PostgreSQL       LLM Provider
++ pgvector       Abstraction
+      │
+      ▼
+    Redis
 ```
 
-This diagram is intentionally high-level. Detailed architecture belongs in `docs/ARCHITECTURE.md`.
+The LLM Gateway isolates the application from specific models and inference providers.
+
+For example:
+
+```text
+Agent Runtime
+      │
+      ▼
+  LLM Gateway
+      │
+      ▼
+  LLMProvider
+      │
+ ┌────┼──────────┐
+ ▼    ▼          ▼
+Mock  Local    Hosted
+      Models   Providers
+```
+
+This architecture is intentionally high-level. Detailed architecture belongs in `docs/ARCHITECTURE.md`.
 
 ## Development
 
@@ -87,22 +120,37 @@ AURA is being developed incrementally.
 
 ```text
 M0  Foundation
-M1  LLM Gateway
+M1  Model Gateway
 M2  Basic RAG
 M3  Advanced RAG
 M4  Agent System
 M5  Autonomous Research
 M6  Evaluation
-M7  Local Models
+M7  Local/Open Model Expansion
 M8  Deployment
 ```
 
 Each milestone should result in a working and testable increment.
 
+The initial AI development path is:
+
+```text
+Provider Interface
+       ↓
+Mock Provider
+       ↓
+Local/Open Model
+       ↓
+Additional Providers
+```
+
+The early development process must not require a paid external LLM API.
+
 ## Repository Structure
 
 ```text
 AURA/
+
 ├── AGENTS.md
 ├── README.md
 ├── docs/
@@ -117,10 +165,28 @@ The repository documentation and implementation together form the project source
 
 **Phase:** M0 — Foundation
 
-The repository has been initialized. Application code has not yet been implemented.
+The repository and application foundation have been initialized and verified.
+
+M0 includes:
+
+* Django backend
+* Django REST Framework
+* Next.js frontend
+* JavaScript frontend
+* PostgreSQL configuration
+* Environment-based configuration
+* Backend health endpoint
+* Initial automated tests
+* Development tooling and repository documentation
 
 See `docs/STATUS.md` for the current implementation state.
 
 ## Development Principle
 
-> **AURA is not an OpenAI application. AURA is an LLM-agnostic agentic AI platform whose first provider is OpenAI.**
+> **AURA is not an OpenAI application. AURA is an open-model-first, LLM-agnostic agentic AI platform.**
+
+No core component should depend directly on a specific model vendor or inference provider.
+
+Model and provider-specific logic belongs behind the provider abstraction.
+
+The architecture should allow AURA to move between models and inference systems without requiring changes to the core agent, RAG, API, frontend, or evaluation architecture.
