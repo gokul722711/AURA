@@ -209,12 +209,13 @@ Implements:
 
 Verified:
 
-* 360/360 backend tests pass (100% offline, deterministic)
+* 366/366 backend tests pass (100% offline, deterministic)
 * System check (`python manage.py check`) passes with zero issues
 * Model migrations check (`makemigrations --check --dry-run`) passes
 * Frontend Next.js production build passes with zero TypeScript
 * `git diff --check` passes
 * Zero secrets in code, docs, tests, or .env.example
+* M5 performance investigation and token-budget fix documented in `docs/debugging/M5-research-performance.md`.
 
 ---
 

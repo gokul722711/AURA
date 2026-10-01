@@ -7,7 +7,7 @@ from typing import Any
 from django.test import TestCase
 
 from agent.execution.limits import ExecutionLimits
-from agent.planning.research import ResearchPlanner
+from agent.planning.research import RESEARCH_DECISION_SCHEMA, ResearchPlanner
 from agent.research import create_research_runtime
 from agent.state import AgentStatus
 from agent.tools.builtin.rag import RAGSearchTool
@@ -43,6 +43,7 @@ class ScriptedLLMProvider(LLMProvider):
         self.responses = list(responses or [])
         self.call_count = 0
         self.recorded_requests: list[GenerationRequest] = []
+        self.recorded_structured_requests: list[StructuredOutputRequest] = []
         self.fail_on_call = fail_on_call
         self.failure_exc = failure_exc or GenerationError("Simulated provider failure")
 
@@ -78,12 +79,20 @@ class ScriptedLLMProvider(LLMProvider):
     def structured_output(
         self, request: StructuredOutputRequest
     ) -> StructuredOutputResponse:
-        gen_req = GenerationRequest(messages=request.messages, model=request.model)
+        self.recorded_structured_requests.append(request)
+        gen_req = GenerationRequest(
+            messages=request.messages,
+            model=request.model,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+        )
         resp = self.generate(gen_req)
         try:
             data = json.loads(resp.text)
-        except Exception:
-            data = {"raw": resp.text}
+        except Exception as exc:
+            raise GenerationError(
+                f"Model returned invalid JSON decision: {exc}. Raw output: {resp.text}"
+            ) from exc
         return StructuredOutputResponse(
             data=data,
             raw_text=resp.text,
@@ -312,3 +321,192 @@ class AutonomousResearchTests(TestCase):
         self.assertFalse(result.is_success)
         self.assertEqual(result.status, AgentStatus.FAILED)
         self.assertTrue(any("Time limit" in err for err in result.state.errors))
+
+    def test_research_requests_receive_expected_max_tokens(self) -> None:
+        """Regression test: verify GenerationRequest receives expected max_tokens for decision and synthesis."""
+        responses = [
+            '{"decision": "continue", "query": "qubits superposition"}',
+            '{"decision": "finish"}',
+            "Grounded Synthesis: Qubits operate in superposition.",
+        ]
+        provider = ScriptedLLMProvider(responses=responses)
+        runtime = self._build_runtime(provider)
+
+        result = runtime.run("Investigate how qubits operate in quantum computing.")
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.status, AgentStatus.COMPLETED)
+        # We had 3 LLM calls:
+        # 1: _get_model_decision (initial step) -> max_tokens == 256
+        # 2: _get_model_decision (replanning after evidence) -> max_tokens == 256
+        # 3: _synthesize_grounded_answer -> max_tokens == 1024
+        self.assertEqual(len(provider.recorded_requests), 3)
+
+        decision_req_1 = provider.recorded_requests[0]
+        self.assertEqual(decision_req_1.max_tokens, 256)
+
+        decision_req_2 = provider.recorded_requests[1]
+        self.assertEqual(decision_req_2.max_tokens, 256)
+
+        synthesis_req = provider.recorded_requests[2]
+        self.assertEqual(synthesis_req.max_tokens, 1024)
+
+    def test_research_planner_configurable_max_tokens(self) -> None:
+        """Verify ResearchPlanner honors custom decision_max_tokens and synthesis_max_tokens."""
+        responses = [
+            '{"decision": "continue", "query": "qubits superposition"}',
+            '{"decision": "finish"}',
+            "Custom max tokens grounded answer.",
+        ]
+        provider = ScriptedLLMProvider(responses=responses)
+        gateway = ModelGateway(provider=provider)
+        planner = ResearchPlanner(
+            gateway=gateway,
+            decision_max_tokens=128,
+            synthesis_max_tokens=512,
+        )
+        registry = ToolRegistry()
+        rag_tool = RAGSearchTool(
+            embedding_provider=self.embedding_provider,
+            config=RetrievalConfig(top_k=3),
+        )
+        registry.register(rag_tool)
+        policy = DefaultToolPolicy(allowed_tools={"rag_search"})
+        from agent.runtime import AgentRuntime
+        runtime = AgentRuntime(
+            planner=planner,
+            gateway=gateway,
+            registry=registry,
+            policy=policy,
+        )
+
+        result = runtime.run("Custom max tokens test")
+        self.assertTrue(result.is_success)
+
+        self.assertEqual(len(provider.recorded_requests), 3)
+        self.assertEqual(provider.recorded_requests[0].max_tokens, 128)
+        self.assertEqual(provider.recorded_requests[1].max_tokens, 128)
+        self.assertEqual(provider.recorded_requests[2].max_tokens, 512)
+
+    def test_valid_continue_structured_decision(self) -> None:
+        """Requirement: valid CONTINUE structured decision produces rag_search tool step."""
+        provider = ScriptedLLMProvider(
+            responses=['{"decision": "continue", "query": "qubits superposition"}']
+        )
+        gateway = ModelGateway(provider=provider)
+        planner = ResearchPlanner(gateway=gateway)
+        from agent.state import AgentState
+        state = AgentState.create("Investigate quantum computing")
+
+        plan = planner.plan(state.objective, state)
+
+        self.assertEqual(len(plan.steps), 1)
+        step = plan.steps[0]
+        from agent.planning.base import ActionType
+        self.assertEqual(step.action_type, ActionType.TOOL)
+        self.assertEqual(step.payload.get("tool_name"), "rag_search")
+        self.assertEqual(step.payload.get("tool_input"), {"query": "qubits superposition"})
+        self.assertEqual(len(provider.recorded_structured_requests), 1)
+        req = provider.recorded_structured_requests[0]
+        self.assertEqual(req.schema, RESEARCH_DECISION_SCHEMA)
+        self.assertEqual(req.max_tokens, 256)
+
+    def test_valid_finish_structured_decision(self) -> None:
+        """Requirement: valid FINISH structured decision produces finish step with grounded synthesis."""
+        provider = ScriptedLLMProvider(
+            responses=[
+                '{"decision": "finish"}',
+                "Grounded Synthesis: Qubits operate in superposition.",
+            ]
+        )
+        gateway = ModelGateway(provider=provider)
+        planner = ResearchPlanner(gateway=gateway)
+        from agent.state import AgentState
+        state = AgentState.create("Investigate quantum computing")
+        state.record_tool_result({
+            "tool_name": "rag_search",
+            "output": [
+                {
+                    "chunk_id": "chunk-1",
+                    "document_title": "Quantum Architecture Report",
+                    "document_source": "quantum_report.pdf",
+                    "content": "Qubits operate in superposition.",
+                }
+            ],
+            "metadata": {"query": "qubits superposition"},
+        })
+
+        plan = planner.plan(state.objective, state)
+
+        self.assertEqual(len(plan.steps), 1)
+        step = plan.steps[0]
+        from agent.planning.base import ActionType
+        self.assertEqual(step.action_type, ActionType.FINISH)
+        self.assertIn("Qubits operate in superposition", step.payload.get("final_answer", ""))
+        self.assertEqual(len(provider.recorded_structured_requests), 1)
+        self.assertEqual(provider.recorded_structured_requests[0].schema, RESEARCH_DECISION_SCHEMA)
+        self.assertEqual(provider.recorded_structured_requests[0].max_tokens, 256)
+
+    def test_structured_decision_with_accumulated_evidence(self) -> None:
+        """Requirement: structured decision receives accumulated evidence in prompt."""
+        provider = ScriptedLLMProvider(
+            responses=['{"decision": "continue", "query": "entanglement"}']
+        )
+        gateway = ModelGateway(provider=provider)
+        planner = ResearchPlanner(gateway=gateway)
+        from agent.state import AgentState
+        state = AgentState.create("Quantum analysis")
+        state.record_tool_result({
+            "tool_name": "rag_search",
+            "output": [
+                {
+                    "chunk_id": "c-42",
+                    "document_title": "Entanglement Overview",
+                    "document_source": "doc.pdf",
+                    "content": "Entanglement correlates quantum states.",
+                }
+            ],
+            "metadata": {"query": "initial query"},
+        })
+
+        plan = planner.plan(state.objective, state)
+
+        self.assertEqual(len(provider.recorded_structured_requests), 1)
+        struct_req = provider.recorded_structured_requests[0]
+        user_content = struct_req.messages[-1].content
+        self.assertIn("Entanglement Overview", user_content)
+        self.assertIn("c-42", user_content)
+        self.assertIn("Entanglement correlates quantum states.", user_content)
+        self.assertIn("initial query", user_content)
+
+    def test_malformed_structured_response_handled_as_controlled_planner_failure(self) -> None:
+        """Requirement: malformed structured output is caught and handled safely as controlled failure."""
+        class MalformedStructuredProvider(LLMProvider):
+            def metadata(self) -> ProviderMetadata:
+                return ProviderMetadata(provider="malformed", model="m", capabilities=ALL_CAPABILITIES)
+
+            def generate(self, request: GenerationRequest) -> GenerationResponse:
+                return GenerationResponse(text="", provider="malformed", model="m")
+
+            def stream(self, request: GenerationRequest):
+                yield StreamChunk(text="")
+
+            def structured_output(self, request: StructuredOutputRequest) -> StructuredOutputResponse:
+                return StructuredOutputResponse(
+                    data="invalid non-dict data",
+                    raw_text="invalid non-dict data",
+                    provider="malformed",
+                    model="m",
+                )
+
+        gateway = ModelGateway(provider=MalformedStructuredProvider())
+        runtime = create_research_runtime(
+            gateway=gateway,
+            embedding_provider=self.embedding_provider,
+        )
+
+        result = runtime.run("Test malformed response")
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.status, AgentStatus.FAILED)
+        self.assertTrue(any("must be a JSON object" in err for err in result.state.errors))

@@ -161,6 +161,7 @@ class NvidiaLLMProvider(LLMProvider):
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
+            "response_format": {"type": "json_object"},
         }
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature

@@ -8,7 +8,23 @@ from agent.exceptions import InvalidPlanError
 from agent.planning.base import ActionType, AgentStep, Plan, Planner
 from agent.state import AgentState
 from gateway.gateway import ModelGateway
-from gateway.types import GenerationRequest, Message
+from gateway.types import GenerationRequest, Message, StructuredOutputRequest
+
+RESEARCH_DECISION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "decision": {
+            "type": "string",
+            "enum": ["continue", "finish"],
+            "description": "Decision whether to continue research by querying the knowledge base, or finish and synthesize an answer.",
+        },
+        "query": {
+            "type": "string",
+            "description": "Specific search query to execute if decision is continue.",
+        },
+    },
+    "required": ["decision"],
+}
 
 
 class ResearchPlanner(Planner):
@@ -26,11 +42,15 @@ class ResearchPlanner(Planner):
         decision_temperature: float = 0.0,
         synthesis_temperature: float = 0.2,
         max_queries: int | None = None,
+        decision_max_tokens: int = 256,
+        synthesis_max_tokens: int = 1024,
     ) -> None:
         self.gateway = gateway
         self.decision_temperature = decision_temperature
         self.synthesis_temperature = synthesis_temperature
         self.max_queries = max_queries
+        self.decision_max_tokens = decision_max_tokens
+        self.synthesis_max_tokens = synthesis_max_tokens
 
     def plan(self, objective: str, state: AgentState) -> Plan:
         """Produce the next research step or grounded final synthesis."""
@@ -135,21 +155,20 @@ class ResearchPlanner(Planner):
         past_queries: list[str],
         evidence: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Prompt LLM via ModelGateway to decide next research step or finish."""
+        """Prompt LLM via ModelGateway.structured_output to decide next research step or finish."""
         system_prompt = (
             "You are AURA's Autonomous Research Agent. Your goal is to thoroughly "
             "investigate a research objective by querying the knowledge base.\n\n"
             "At each step, examine the objective and any already collected evidence.\n"
-            "Respond strictly with a JSON object in one of two formats:\n\n"
+            "Produce a structured decision in one of two formats:\n\n"
             "1. If more information is required from the knowledge base:\n"
-            '{\n  "decision": "continue",\n  "query": "<specific search query>"\n}\n\n'
+            '   decision="continue", query="<specific search query>"\n\n'
             "2. If sufficient evidence has been collected to synthesize a grounded answer, "
             "or if further searching will not yield new evidence:\n"
-            '{\n  "decision": "finish"\n}\n\n'
+            '   decision="finish"\n\n'
             "Rules:\n"
-            "- Output ONLY valid JSON.\n"
-            "- Do NOT include explanations outside the JSON structure.\n"
-            "- Formulate focused, specific search queries."
+            "- Formulate focused, specific search queries.\n"
+            "- When decision is 'continue', query must be a non-empty string."
         )
 
         if not past_queries:
@@ -183,31 +202,21 @@ class ResearchPlanner(Planner):
             Message(role="user", content=user_content),
         ]
 
-        req = GenerationRequest(
+        req = StructuredOutputRequest(
             messages=messages,
+            schema=RESEARCH_DECISION_SCHEMA,
             temperature=self.decision_temperature,
+            max_tokens=self.decision_max_tokens,
         )
 
-        resp = self.gateway.generate(req)
-        raw_text = resp.text.strip()
-
-        # Clean markdown code fences if present
-        clean_text = raw_text
-        if clean_text.startswith("```"):
-            lines = clean_text.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            clean_text = "\n".join(lines).strip()
-
         try:
-            data = json.loads(clean_text)
+            resp = self.gateway.structured_output(req)
         except Exception as exc:
             raise InvalidPlanError(
-                f"Model returned invalid JSON decision: {exc}. Raw output: {raw_text}"
+                f"Structured decision generation failed: {exc}"
             ) from exc
 
+        data = resp.data
         if not isinstance(data, dict):
             raise InvalidPlanError(
                 f"Model decision must be a JSON object, got {type(data).__name__}."
@@ -266,6 +275,7 @@ class ResearchPlanner(Planner):
         req = GenerationRequest(
             messages=messages,
             temperature=self.synthesis_temperature,
+            max_tokens=self.synthesis_max_tokens,
         )
 
         resp = self.gateway.generate(req)
