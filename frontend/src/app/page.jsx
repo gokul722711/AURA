@@ -32,6 +32,7 @@ export default function Home() {
 
   // Research State
   const [objective, setObjective] = useState("");
+  const [researchMode, setResearchMode] = useState("knowledge_base"); // 'model_knowledge' | 'knowledge_base' | 'web' | 'web_knowledge_base'
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
@@ -39,9 +40,25 @@ export default function Home() {
   // Active Run Tracking (M9 Polling)
   const [activeRunId, setActiveRunId] = useState(null);
   const [activeRunStatus, setActiveRunStatus] = useState(null); // 'queued' | 'running'
+  const [activeRunMode, setActiveRunMode] = useState(null);
   const [activeRunElapsed, setActiveRunElapsed] = useState(0);
   const pollTimerRef = useRef(null);
   const elapsedTimerRef = useRef(null);
+
+  const formatMode = (m) => {
+    switch (m) {
+      case "model_knowledge":
+        return "Model Knowledge";
+      case "knowledge_base":
+        return "Knowledge Base";
+      case "web":
+        return "Web";
+      case "web_knowledge_base":
+        return "Web + KB";
+      default:
+        return m || "Knowledge Base";
+    }
+  };
 
   // Research History State
   const [historyRuns, setHistoryRuns] = useState([]);
@@ -139,6 +156,9 @@ export default function Home() {
         const data = await response.json();
 
         setActiveRunStatus(data.status);
+        if (data.mode) {
+          setActiveRunMode(data.mode);
+        }
 
         if (data.status === "completed") {
           setResult(data);
@@ -194,7 +214,7 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ objective: trimmed }),
+        body: JSON.stringify({ objective: trimmed, mode: researchMode }),
       });
 
       const contentType = response.headers.get("content-type") || "";
@@ -214,6 +234,7 @@ export default function Home() {
       // 202 Accepted: Initialize polling
       setActiveRunId(data.run_id);
       setActiveRunStatus(data.status || "queued");
+      setActiveRunMode(data.mode || researchMode);
       fetchHistory();
     } catch (err) {
       setError(err.message || "Failed to communicate with research backend.");
@@ -249,6 +270,9 @@ export default function Home() {
         const data = await response.json();
         setResult(data);
         setObjective(data.objective || "");
+        if (data.mode) {
+          setResearchMode(data.mode);
+        }
         setActiveTab("research");
         setError(null);
         window.scrollTo({ top: 0, behavior: "smooth" });
@@ -382,7 +406,7 @@ export default function Home() {
         <header className="header">
           <div className="header-top">
             <h1 className="logo">AURA</h1>
-            <span className="phase-pill">M9 — Async Research</span>
+            <span className="phase-pill">M10 — Research Modes &amp; Web</span>
           </div>
           <p className="subtitle">
             Autonomous Research &amp; Engineering Agent
@@ -440,6 +464,35 @@ export default function Home() {
             {/* Input Form Card */}
             <section className="card" aria-label="Research input">
               <form onSubmit={handleResearchSubmit} className="form-group">
+                {/* Research Mode Selector */}
+                <div className="mode-selector-container">
+                  <div className="mode-selector-header">
+                    <label htmlFor="mode-select" className="mode-selector-label">
+                      Research Mode
+                    </label>
+                    <span className="mode-selector-desc">
+                      {researchMode === "model_knowledge" && "Pretrained LLM knowledge only (no RAG or web)."}
+                      {researchMode === "knowledge_base" && "Grounded search strictly against indexed Knowledge Base."}
+                      {researchMode === "web" && "Live web search only (no Knowledge Base)."}
+                      {researchMode === "web_knowledge_base" && "Hybrid: Autonomous planner uses both KB and Web."}
+                    </span>
+                  </div>
+                  <div className="mode-select-wrapper">
+                    <select
+                      id="mode-select"
+                      className="mode-select-dropdown"
+                      value={researchMode}
+                      onChange={(e) => setResearchMode(e.target.value)}
+                      disabled={loading}
+                    >
+                      <option value="knowledge_base">Knowledge Base (Default)</option>
+                      <option value="web">Web</option>
+                      <option value="web_knowledge_base">Web + Knowledge Base</option>
+                      <option value="model_knowledge">Model Knowledge</option>
+                    </select>
+                  </div>
+                </div>
+
                 <div className="label">
                   <label htmlFor="objective-input">Research Objective</label>
                   <span className="label-hint">
@@ -520,13 +573,16 @@ export default function Home() {
                       Status: {activeRunStatus || "queued"}
                     </span>
                   </div>
+                  <span className="mode-pill mode-pill-active">
+                    Mode: {formatMode(activeRunMode || researchMode)}
+                  </span>
                   <span className="active-run-timer">{activeRunElapsed}s elapsed</span>
                 </div>
 
                 <div className="active-run-body">
                   <p className="active-run-title">Autonomous Research in Progress</p>
                   <p className="active-run-sub">
-                    Celery worker is executing iterative planning, RAG retrieval, grounded synthesis, and citation verification in the background.
+                    Celery worker is executing iterative planning, information retrieval, grounded synthesis, and citation verification in the background.
                   </p>
                   <div className="active-run-meta">
                     <span>Run ID: <code>{activeRunId}</code></span>
@@ -569,6 +625,9 @@ export default function Home() {
                     }`}
                   >
                     ● Status: {result.status}
+                  </span>
+                  <span className="badge badge-mode">
+                    Mode: {formatMode(result.mode || activeRunMode || researchMode)}
                   </span>
                   <span
                     className={`badge ${
@@ -1092,6 +1151,9 @@ export default function Home() {
                             }`}
                           >
                             ● {run.status}
+                          </span>
+                          <span className="mode-pill">
+                            {formatMode(run.mode)}
                           </span>
                           {run.is_grounded && (
                             <span className="grounded-pill">✓ Grounded</span>

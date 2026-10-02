@@ -37,10 +37,15 @@ def sanitize_text(text: str) -> str:
         sanitized = sanitized.replace(env_key.strip(), "[REDACTED]")
 
     # Apply regex patterns for known token formats
-    sanitized = re.sub(r"nvapi-[A-Za-z0-9_\-\.]{8,}", "[REDACTED]", sanitized, flags=re.IGNORECASE)
-    sanitized = re.sub(r"sk-[A-Za-z0-9_\-\.]{8,}", "[REDACTED]", sanitized, flags=re.IGNORECASE)
-    sanitized = re.sub(r"Bearer\s+[A-Za-z0-9_\-\.]{8,}", "Bearer [REDACTED]", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r"nvapi-[A-Za-z0-9_\-\.]{4,}", "[REDACTED]", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r"sk-[A-Za-z0-9_\-\.]{4,}", "[REDACTED]", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r"Bearer\s+[A-Za-z0-9_\-\.]{4,}", "Bearer [REDACTED]", sanitized, flags=re.IGNORECASE)
     sanitized = re.sub(r"://([^:]+):([^@]+)@", r"://\1:[REDACTED]@", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(
+        r"(?i)(key|secret|token|password|auth)\s*[:=]\s*['\"]?([a-zA-Z0-9_\-\.]{4,})['\"]?",
+        r"\1=[REDACTED]",
+        sanitized,
+    )
 
     return sanitized
 

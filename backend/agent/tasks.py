@@ -49,7 +49,7 @@ def execute_research_run(self, run_id: str) -> dict[str, Any]:
     logger.info("Starting autonomous research execution for run_id=%s", run_id)
 
     try:
-        runtime = create_research_runtime()
+        runtime = create_research_runtime(mode=run.mode)
         research_result = runtime.run_research(run.objective)
 
         # Check if cancelled during execution

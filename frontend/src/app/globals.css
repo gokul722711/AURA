@@ -150,6 +150,76 @@ body {
   gap: 0.75rem;
 }
 
+/* Research Mode Selector (M10) */
+.mode-selector-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-bottom: 0.35rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mode-selector-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.mode-selector-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.mode-selector-desc {
+  font-size: 0.775rem;
+  color: var(--color-text-muted);
+}
+
+.mode-select-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.mode-select-dropdown {
+  width: 100%;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.65rem 0.95rem;
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.mode-select-dropdown:focus {
+  border-color: var(--color-border-focus);
+  box-shadow: 0 0 0 2px var(--color-accent-glow);
+}
+
+.mode-pill {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.6rem;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  color: #38bdf8;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.mode-pill-active {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
 .label {
   font-size: 0.9rem;
   font-weight: 600;
@@ -418,6 +488,13 @@ body {
   background: var(--color-surface-elevated);
   color: var(--color-text-secondary);
   border-color: var(--color-border);
+  font-family: var(--font-mono);
+}
+
+.badge-mode {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.35);
   font-family: var(--font-mono);
 }
 

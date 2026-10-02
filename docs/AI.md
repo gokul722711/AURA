@@ -548,7 +548,36 @@ The following capabilities are explicitly out of scope for M5:
 
 ---
 
-## 17. Core Rule
+## 17. Research Modes & Web Research (M10)
+
+M10 introduces user-controlled information source policies and provider-neutral live web search without altering existing agent execution primitives.
+
+### Research Modes
+
+1. **Model Knowledge (`model_knowledge`)**:
+   * Answers using pretrained model knowledge through `ModelGateway.generate()`.
+   * Neither Knowledge Base retrieval nor web search is registered or executed.
+2. **Knowledge Base (`knowledge_base`)**:
+   * Uses only indexed Knowledge Base documents via `RAGSearchTool`.
+   * Preserves default, grounded M4–M9 research behavior. Backward-compatible default.
+3. **Web (`web`)**:
+   * Uses live web search via `WebSearchTool`.
+   * Knowledge Base retrieval is not registered or permitted.
+4. **Web + Knowledge Base (`web_knowledge_base`)**:
+   * Allows both `RAGSearchTool` and `WebSearchTool`.
+   * Autonomous planner dynamically decides which tool to invoke per step based on accumulated evidence.
+
+### WebSearchTool Abstraction
+
+* Provider-agnostic `WebSearchProvider` interface (`MockWebSearchProvider`, `DuckDuckGoWebSearchProvider`).
+* Normalizes search results into structured evidence chunks:
+  * `title`, `url`, `domain`, `snippet`, `timestamp`, `metadata`.
+  * `chunk_id` formatted as `web-{hash}` with verified citations.
+* Strict tool isolation enforced via `ToolRegistry` and `DefaultToolPolicy`.
+
+---
+
+## 18. Core Rule
 
 > **AURA is open-model-first and LLM-agnostic.**
 

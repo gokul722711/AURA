@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-**M9 — Async Research & Run History: COMPLETE**
+**M10 — Research Modes + Web Research: COMPLETE**
 
 ---
 
@@ -336,6 +336,44 @@ Verified:
 * `git diff --check` passes with zero issues
 * Zero secrets committed
 
+### M10 — Research Modes + Web Research
+
+User-controlled information source policies and live web research capability integrated into the autonomous research system.
+
+Implemented:
+
+* **WebSearchTool Abstraction** (`backend/agent/tools/builtin/web.py`):
+  * Provider-neutral `WebSearchProvider` interface with deterministic `MockWebSearchProvider` and standard-library `DuckDuckGoWebSearchProvider`.
+  * `WebSearchResult` dataclass (`title`, `url`, `snippet`, `domain`, `timestamp`, `metadata`).
+  * `WebSearchTool` producing structured evidence chunks formatted as `web-{hash}` with verifiable citations matching M6 integrity rules.
+* **Explicit Research Modes** (`backend/agent/models.py`, `backend/agent/planning/research.py`, `backend/agent/research.py`):
+  * `model_knowledge`: LLM pretrained knowledge direct answer path via `ModelGateway.generate()`, bypassing RAG and web search entirely.
+  * `knowledge_base`: AURA indexed Knowledge Base via `RAGSearchTool` only (backward-compatible default).
+  * `web`: Live web search via `WebSearchTool` only; Knowledge Base retrieval disabled.
+  * `web_knowledge_base`: Hybrid research allowing both Knowledge Base and Web tools with dynamic multi-tool planning decisions.
+  * Strict capability isolation configured via `ToolRegistry` and `DefaultToolPolicy(allowed_tools=...)`.
+* **Async API & Run Persistence** (`backend/agent/views.py`, `backend/agent/tasks.py`):
+  * POST `/api/research/` accepts explicit `mode` parameter with validation against `MODE_CHOICES` and returns `mode` in HTTP 202 response.
+  * `ResearchRun.mode` persisted to PostgreSQL via migration `0002_researchrun_mode_and_more`.
+  * GET `/api/research/<run_id>/` and GET `/api/research/runs/` expose the executed mode.
+* **Frontend Research Mode Control & Attribution UI** (`frontend/src/app/page.jsx`, `frontend/src/app/globals.css`):
+  * Mode selector dropdown with contextual mode explanations above objective input.
+  * Active run card and result summary metadata bar display current execution mode.
+  * Research History displays mode badges for every recorded run and restores mode upon inspection.
+* **Automated Tests**:
+  * 19 backend tests in `agent/tests/test_modes_and_web_research.py` covering tool validation, provider abstraction, policy enforcement, planner multi-tool decisions, all 4 mode paths, model direct answer, and API integration.
+  * 5 frontend tests in `frontend/tests/research-modes.test.mjs` verifying label formatting, submit payloads, 202 parsing, history parsing, and web evidence structures.
+
+Verified:
+
+* 453/453 backend tests pass (100% offline, deterministic)
+* System check (`python manage.py check`) passes with zero issues
+* Model migrations check (`makemigrations --check`) passes with zero changes
+* Frontend Next.js production build passes with zero TypeScript
+* 16/16 frontend unit tests pass (`npm test`)
+* `git diff --check` passes with zero issues
+* Zero secrets committed
+
 ---
 
 ## Development Roadmap
@@ -351,8 +389,9 @@ M6  Research Result & Evidence Quality  COMPLETE
 M7  Research API + Minimal Frontend     COMPLETE
 M8  Knowledge Base & Document Ingestion COMPLETE
 M9  Async Research & Run History        COMPLETE
-M10 Local/Open Model Expansion
-M11 Deployment
+M10 Research Modes + Web Research       COMPLETE
+M11 Local/Open Model Expansion
+M12 Deployment
 ```
 
 Milestones are incremental. Each milestone should produce a working, tested increment.

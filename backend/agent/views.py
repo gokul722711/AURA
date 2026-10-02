@@ -69,9 +69,28 @@ class ResearchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Validate mode (default to knowledge_base if omitted)
+        mode = data.get("mode", ResearchRun.MODE_KNOWLEDGE_BASE)
+        if not isinstance(mode, str):
+            return Response(
+                {"error": "Field 'mode' must be a string."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        mode = mode.strip().lower()
+        valid_modes = [c[0] for c in ResearchRun.MODE_CHOICES]
+        if mode not in valid_modes:
+            return Response(
+                {
+                    "error": f"Invalid mode '{mode}'. Must be one of: {', '.join(valid_modes)}.",
+                    "valid_modes": valid_modes,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # 1. Create persistent ResearchRun
         run = ResearchRun.objects.create(
             objective=trimmed_objective,
+            mode=mode,
             status=ResearchRun.STATUS_QUEUED,
         )
 
@@ -94,6 +113,7 @@ class ResearchView(APIView):
                     "detail": "Could not dispatch task to broker (Redis).",
                     "run_id": str(run.id),
                     "status": "failed",
+                    "mode": run.mode,
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
@@ -101,6 +121,7 @@ class ResearchView(APIView):
         response_data = {
             "run_id": str(run.id),
             "status": run.status,
+            "mode": run.mode,
             "objective": run.objective,
             "created_at": run.created_at.isoformat() if run.created_at else None,
         }

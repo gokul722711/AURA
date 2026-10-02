@@ -350,7 +350,7 @@ class ResearchResult:
         for res in getattr(state, "tool_results", []):
             if not isinstance(res, dict):
                 continue
-            if res.get("tool_name") == "rag_search":
+            if res.get("tool_name") in ("rag_search", "web_search"):
                 meta = res.get("metadata")
                 if isinstance(meta, dict):
                     q = meta.get("query")

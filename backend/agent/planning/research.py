@@ -29,7 +29,7 @@ RESEARCH_DECISION_SCHEMA: dict[str, Any] = {
 
 
 class ResearchPlanner(Planner):
-    """Iterative, LLM-driven planner for autonomous research.
+    """Iterative, LLM-driven planner for autonomous research with multiple research modes.
 
     Evaluates accumulated evidence, autonomously decides whether to continue
     searching or finish, and produces grounded final synthesis with citation tracing.
@@ -45,6 +45,8 @@ class ResearchPlanner(Planner):
         max_queries: int | None = None,
         decision_max_tokens: int = 256,
         synthesis_max_tokens: int = 1024,
+        mode: str = "knowledge_base",
+        available_tools: set[str] | list[str] | None = None,
     ) -> None:
         self.gateway = gateway
         self.decision_temperature = decision_temperature
@@ -52,9 +54,72 @@ class ResearchPlanner(Planner):
         self.max_queries = max_queries
         self.decision_max_tokens = decision_max_tokens
         self.synthesis_max_tokens = synthesis_max_tokens
+        self.mode = mode
+
+        if available_tools is not None:
+            self.available_tools = set(available_tools)
+        elif mode == "model_knowledge":
+            self.available_tools = set()
+        elif mode == "web":
+            self.available_tools = {"web_search"}
+        elif mode == "web_knowledge_base":
+            self.available_tools = {"rag_search", "web_search"}
+        else:
+            self.available_tools = {"rag_search"}
+
+    def _synthesize_model_knowledge_answer(self, objective: str) -> str:
+        """Synthesize answer using only the model's pretrained/general knowledge."""
+        messages = [
+            Message(
+                role="system",
+                content=(
+                    "You are AURA's Autonomous Research Agent operating in Model Knowledge mode. "
+                    "Answer the user's research objective comprehensively and accurately using "
+                    "your general pretrained knowledge. Do not cite external documents or chunks."
+                ),
+            ),
+            Message(role="user", content=f"Research Objective:\n{objective}"),
+        ]
+        resp = self.gateway.generate(
+            GenerationRequest(
+                messages=messages,
+                temperature=self.synthesis_temperature,
+                max_tokens=self.synthesis_max_tokens,
+            )
+        )
+        return resp.text.strip()
 
     def plan(self, objective: str, state: AgentState) -> Plan:
         """Produce the next research step or grounded final synthesis."""
+        # 1. Model Knowledge mode: direct synthesis without tool querying
+        if self.mode == "model_knowledge" or not self.available_tools:
+            synthesis = self._synthesize_model_knowledge_answer(objective)
+            step = AgentStep(
+                step_id="step-model-knowledge-1",
+                action_type=ActionType.FINISH,
+                description="Synthesize answer using model pretrained knowledge",
+                payload={
+                    "final_answer": synthesis,
+                    "evidence": [],
+                    "evidence_count": 0,
+                    "has_evidence": False,
+                    "queries": [],
+                },
+                metadata={"mode": "model_knowledge"},
+            )
+            return Plan(
+                plan_id=str(uuid.uuid4()),
+                objective=objective,
+                steps=(step,),
+                metadata={
+                    "planner": "ResearchPlanner",
+                    "mode": "model_knowledge",
+                    "decision": "finish",
+                    "has_evidence": False,
+                },
+            )
+
+        # 2. Tool-based research modes (Knowledge Base, Web, Web + Knowledge Base)
         evidence = self._extract_evidence(state)
         past_queries = self._get_past_queries(state)
 
@@ -73,16 +138,25 @@ class ResearchPlanner(Planner):
                     "Model decision 'continue' must include a non-empty string 'query'."
                 )
             query = query.strip()
+
+            # Select tool: if multiple tools are available, check model decision; else use the single available tool
+            if len(self.available_tools) > 1:
+                selected_tool = decision_data.get("tool")
+                if not selected_tool or selected_tool not in self.available_tools:
+                    selected_tool = "rag_search" if "rag_search" in self.available_tools else next(iter(self.available_tools))
+            else:
+                selected_tool = next(iter(self.available_tools))
+
             step_num = len(state.step_history) + 1
             step = AgentStep(
                 step_id=f"step-research-{step_num}",
                 action_type=ActionType.TOOL,
-                description=f"Search knowledge base for: {query}",
+                description=f"Search {selected_tool} for: {query}",
                 payload={
-                    "tool_name": "rag_search",
+                    "tool_name": selected_tool,
                     "tool_input": {"query": query},
                 },
-                metadata={"query": query, "step_num": step_num},
+                metadata={"query": query, "step_num": step_num, "tool": selected_tool},
             )
             return Plan(
                 plan_id=str(uuid.uuid4()),
@@ -92,6 +166,7 @@ class ResearchPlanner(Planner):
                     "planner": "ResearchPlanner",
                     "decision": "continue",
                     "query": query,
+                    "tool": selected_tool,
                 },
             )
 
@@ -135,12 +210,12 @@ class ResearchPlanner(Planner):
             )
 
     def _extract_evidence(self, state: AgentState) -> list[ResearchEvidence]:
-        """Accumulate unique chunks retrieved from all RAG searches in this run."""
+        """Accumulate unique chunks retrieved from all RAG or Web searches in this run."""
         evidence: list[ResearchEvidence] = []
         seen_chunk_ids: set[str] = set()
 
         for res in state.tool_results:
-            if res.get("tool_name") == "rag_search" and not res.get("is_error"):
+            if res.get("tool_name") in ("rag_search", "web_search") and not res.get("is_error"):
                 chunks = res.get("output")
                 if isinstance(chunks, list):
                     for c in chunks:
@@ -160,10 +235,10 @@ class ResearchPlanner(Planner):
         return evidence
 
     def _get_past_queries(self, state: AgentState) -> list[str]:
-        """Extract all queries executed so far in this run."""
+        """Extract all queries executed so far in this run across all search tools."""
         queries: list[str] = []
         for res in state.tool_results:
-            if res.get("tool_name") == "rag_search":
+            if res.get("tool_name") in ("rag_search", "web_search"):
                 q = res.get("metadata", {}).get("query")
                 if q and isinstance(q, str):
                     queries.append(q)
@@ -176,20 +251,69 @@ class ResearchPlanner(Planner):
         evidence: list[Any],
     ) -> dict[str, Any]:
         """Prompt LLM via ModelGateway.structured_output to decide next research step or finish."""
-        system_prompt = (
-            "You are AURA's Autonomous Research Agent. Your goal is to thoroughly "
-            "investigate a research objective by querying the knowledge base.\n\n"
-            "At each step, examine the objective and any already collected evidence.\n"
-            "Produce a structured decision in one of two formats:\n\n"
-            "1. If more information is required from the knowledge base:\n"
-            '   decision="continue", query="<specific search query>"\n\n'
-            "2. If sufficient evidence has been collected to synthesize a grounded answer, "
-            "or if further searching will not yield new evidence:\n"
-            '   decision="finish"\n\n'
-            "Rules:\n"
-            "- Formulate focused, specific search queries.\n"
-            "- When decision is 'continue', query must be a non-empty string."
-        )
+        tool_descriptions = []
+        if "rag_search" in self.available_tools:
+            tool_descriptions.append("- 'rag_search': Search internal indexed Knowledge Base for project documentation and uploaded records.")
+        if "web_search" in self.available_tools:
+            tool_descriptions.append("- 'web_search': Search live web for public documentation, external articles, and web resources.")
+        tools_list_text = "\n".join(tool_descriptions)
+
+        multi_tool = len(self.available_tools) > 1
+
+        if multi_tool:
+            decision_schema: dict[str, Any] = {
+                "type": "object",
+                "properties": {
+                    "decision": {
+                        "type": "string",
+                        "enum": ["continue", "finish"],
+                        "description": "Decision whether to continue research by querying an information source, or finish and synthesize an answer.",
+                    },
+                    "tool": {
+                        "type": "string",
+                        "enum": sorted(list(self.available_tools)),
+                        "description": "Source tool to search: 'rag_search' for indexed knowledge base, or 'web_search' for live web search.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Specific search query to execute if decision is continue.",
+                    },
+                },
+                "required": ["decision"],
+            }
+            system_prompt = (
+                f"You are AURA's Autonomous Research Agent. Your goal is to thoroughly "
+                f"investigate a research objective using the permitted information sources:\n"
+                f"{tools_list_text}\n\n"
+                f"At each step, examine the objective and any already collected evidence.\n"
+                f"Produce a structured decision:\n\n"
+                f"1. If more information is required:\n"
+                f'   decision="continue", tool="<rag_search|web_search>", query="<specific search query>"\n\n'
+                f"2. If sufficient evidence has been collected to synthesize a grounded answer, "
+                f"or if further searching will not yield new evidence:\n"
+                f'   decision="finish"\n\n'
+                f"Rules:\n"
+                f"- Formulate focused, specific search queries.\n"
+                f"- Choose the most appropriate tool based on the objective and evidence.\n"
+                f"- When decision is 'continue', query must be a non-empty string."
+            )
+        else:
+            decision_schema = RESEARCH_DECISION_SCHEMA
+            single_tool = next(iter(self.available_tools)) if self.available_tools else "rag_search"
+            system_prompt = (
+                f"You are AURA's Autonomous Research Agent. Your goal is to thoroughly "
+                f"investigate a research objective by querying: {single_tool}.\n\n"
+                f"At each step, examine the objective and any already collected evidence.\n"
+                f"Produce a structured decision in one of two formats:\n\n"
+                f"1. If more information is required:\n"
+                f'   decision="continue", query="<specific search query>"\n\n'
+                f"2. If sufficient evidence has been collected to synthesize a grounded answer, "
+                f"or if further searching will not yield new evidence:\n"
+                f'   decision="finish"\n\n'
+                f"Rules:\n"
+                f"- Formulate focused, specific search queries.\n"
+                f"- When decision is 'continue', query must be a non-empty string."
+            )
 
         if not past_queries:
             user_content = (
@@ -232,7 +356,7 @@ class ResearchPlanner(Planner):
 
         req = StructuredOutputRequest(
             messages=messages,
-            schema=RESEARCH_DECISION_SCHEMA,
+            schema=decision_schema,
             temperature=self.decision_temperature,
             max_tokens=self.decision_max_tokens,
         )
@@ -261,7 +385,7 @@ class ResearchPlanner(Planner):
         """Synthesize final grounded response using retrieved evidence and citations."""
         if not evidence:
             return (
-                f"The available knowledge base did not provide sufficient supporting evidence "
+                f"The available information sources did not provide sufficient supporting evidence "
                 f"to answer the research objective: '{objective}'. "
                 f"Queries executed: {past_queries}."
             )

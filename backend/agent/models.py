@@ -25,8 +25,27 @@ class ResearchRun(models.Model):
         (STATUS_CANCELLED, "Cancelled"),
     ]
 
+    MODE_MODEL_KNOWLEDGE = "model_knowledge"
+    MODE_KNOWLEDGE_BASE = "knowledge_base"
+    MODE_WEB = "web"
+    MODE_WEB_KNOWLEDGE_BASE = "web_knowledge_base"
+
+    MODE_CHOICES = [
+        (MODE_MODEL_KNOWLEDGE, "Model Knowledge"),
+        (MODE_KNOWLEDGE_BASE, "Knowledge Base"),
+        (MODE_WEB, "Web"),
+        (MODE_WEB_KNOWLEDGE_BASE, "Web + Knowledge Base"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     objective = models.TextField(help_text="User-provided research objective.")
+    mode = models.CharField(
+        max_length=32,
+        choices=MODE_CHOICES,
+        default=MODE_KNOWLEDGE_BASE,
+        db_index=True,
+        help_text="Information source mode for this research run.",
+    )
     status = models.CharField(
         max_length=32,
         choices=STATUS_CHOICES,
@@ -56,10 +75,11 @@ class ResearchRun(models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["status", "-created_at"]),
+            models.Index(fields=["mode", "-created_at"]),
         ]
 
     def __str__(self) -> str:
-        return f"ResearchRun({self.id}, status={self.status})"
+        return f"ResearchRun({self.id}, mode={self.mode}, status={self.status})"
 
     def to_summary_dict(self) -> dict[str, Any]:
         """Return lightweight metadata for research history listing."""
@@ -76,6 +96,7 @@ class ResearchRun(models.Model):
         data: dict[str, Any] = {
             "run_id": str(self.id),
             "objective": self.objective,
+            "mode": self.mode,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
@@ -92,6 +113,7 @@ class ResearchRun(models.Model):
         data: dict[str, Any] = {
             "run_id": str(self.id),
             "objective": self.objective,
+            "mode": self.mode,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
