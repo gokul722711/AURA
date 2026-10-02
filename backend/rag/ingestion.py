@@ -12,6 +12,7 @@ from django.db import transaction
 
 from rag.chunking import ChunkingConfig, chunk_text
 from rag.embeddings.base import EmbeddingProvider
+from rag.embeddings.registry import create_embedding_provider
 from rag.exceptions import DocumentError, EmbeddingError
 from rag.models import Document, DocumentChunk
 
@@ -27,10 +28,18 @@ def _get_chunking_config() -> ChunkingConfig:
     )
 
 
+def get_default_embedding_provider() -> EmbeddingProvider:
+    """Instantiate the default embedding provider from Django settings."""
+    rag_settings = getattr(settings, "AI_EMBEDDINGS", {})
+    provider_name = rag_settings.get("PROVIDER", "mock")
+    dimensions = rag_settings.get("DIMENSIONS", 384)
+    return create_embedding_provider(provider_name, dimensions)
+
+
 def ingest_document(
     title: str,
     content: str,
-    embedding_provider: EmbeddingProvider,
+    embedding_provider: EmbeddingProvider | None = None,
     source: str = "",
     metadata: dict[str, Any] | None = None,
     chunking_config: ChunkingConfig | None = None,
@@ -38,13 +47,13 @@ def ingest_document(
     """Ingest a text document into the RAG system.
 
     Creates a Document record, chunks the content, generates embeddings
-    via the provided EmbeddingProvider, and stores DocumentChunk records
-    with their embedding vectors.
+    via the provided EmbeddingProvider (or default provider if None),
+    and stores DocumentChunk records with their embedding vectors.
 
     Args:
         title: Document title.
         content: Full text content of the document.
-        embedding_provider: Provider to generate embeddings.
+        embedding_provider: Provider to generate embeddings. Defaults to settings-configured provider.
         source: Optional origin identifier (file path, URL).
         metadata: Optional metadata dictionary.
         chunking_config: Optional chunking configuration. Uses settings defaults if None.
@@ -59,6 +68,9 @@ def ingest_document(
         raise DocumentError("Document title must be a non-empty string.")
     if not content or not content.strip():
         raise DocumentError("Document content must be a non-empty string.")
+
+    if embedding_provider is None:
+        embedding_provider = get_default_embedding_provider()
 
     if chunking_config is None:
         chunking_config = _get_chunking_config()

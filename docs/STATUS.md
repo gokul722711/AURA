@@ -2,9 +2,7 @@
 
 ## Current Phase
 
-**M7 — Research API + Minimal Frontend Integration: COMPLETE**
-
-**Next: M8 — Evaluation**
+**M8 — Knowledge Base & Document Ingestion: COMPLETE**
 
 ---
 
@@ -270,6 +268,37 @@ Verified:
 
 ---
 
+## M8 — Knowledge Base & Document Ingestion
+
+**Status: COMPLETE**
+
+### Objective
+
+Make the existing M2 document/RAG ingestion capability directly usable through the application via a minimal Django REST API and Knowledge Base frontend interface.
+
+Implements:
+
+* **Backend Document Endpoints** (`POST /api/documents/`, `GET /api/documents/`, `GET /api/documents/<id>/`, `DELETE /api/documents/<id>/`): Routed in `backend/rag/urls.py` and implemented via `DocumentListCreateView` and `DocumentDetailView` in `backend/rag/views.py`.
+* **Reuse of Existing M2 Ingestion**: Integrates directly with `rag.ingestion.ingest_document()`, persisting documents and vector chunks via PostgreSQL and pgvector without duplicating chunking or embedding logic.
+* **Document Deletion & Cascade**: Removes documents and cleans up all associated `DocumentChunk` records via Django's CASCADE relationship without leaving orphaned chunks.
+* **Clean Security & Error Handling**: Strict validation for required fields (`title`, `content`), rejection of empty/whitespace inputs, and sanitized error responses without leaking credentials or internal stack traces.
+* **Frontend Knowledge Base UI** (`frontend/src/app/page.jsx`, `frontend/src/app/globals.css`): Next.js interface with tabbed navigation (`Autonomous Research` and `Knowledge Base`), document listing with chunk count and status badges, expandable document preview, inline add document form with sample markdown loader, and delete action with confirmation.
+* **Comprehensive Test Suite**:
+  * 22 backend automated tests (`backend/rag/tests/test_document_api.py`) validating create, list, retrieve, delete, validation errors, failure handling, cascade cleanup, and end-to-end research grounding.
+  * 6 frontend automated tests (`frontend/tests/knowledge-base.test.mjs`) validating route rewrites, payload validation, list parsing, error handling, and deletion.
+
+Verified:
+
+* 418/418 backend tests pass (100% offline, deterministic)
+* System check (`python manage.py check`) passes with zero issues
+* Model migrations check (`makemigrations --check`) passes with zero changes
+* Frontend Next.js production build passes with zero TypeScript
+* Frontend test suite passes (`npm test`)
+* `git diff --check` passes with zero issues
+* Zero secrets committed
+
+---
+
 ## Development Roadmap
 
 ```text
@@ -281,7 +310,7 @@ M4  Agent System                        COMPLETE
 M5  Autonomous Research                 COMPLETE
 M6  Research Result & Evidence Quality  COMPLETE
 M7  Research API + Minimal Frontend     COMPLETE
-M8  Evaluation                          NEXT
+M8  Knowledge Base & Document Ingestion COMPLETE
 M9  Local/Open Model Expansion
 M10 Deployment
 ```
