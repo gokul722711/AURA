@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-**M8 — Knowledge Base & Document Ingestion: COMPLETE**
+**M9 — Async Research & Run History: COMPLETE**
 
 ---
 
@@ -299,6 +299,45 @@ Verified:
 
 ---
 
+## M9 — Async Research & Run History
+
+**Status: COMPLETE**
+
+### Objective
+
+Move autonomous research from long-running synchronous HTTP requests to a persistent asynchronous research-run model with Celery and Redis, and add research run history.
+
+Implements:
+
+* **ResearchRun Persistence** (`agent/models.py`): Persistent model tracking `id` (UUID), `objective`, `status` (`queued`, `running`, `completed`, `failed`, `cancelled`), `created_at`, `started_at`, `completed_at`, `duration_ms`, `result` (structured M6 dictionary), and `error_message`.
+* **Celery & Redis Architecture**: Celery integration via `backend/config/celery.py` with Redis broker (`CELERY_BROKER_URL`). Redis acts strictly as task queue broker; PostgreSQL remains the persistent source of truth.
+* **Celery Research Task** (`agent/tasks.py`): `execute_research_run(run_id)` independently orchestrating the lifecycle: loading run, setting running status, executing `ResearchRuntime.run_research(objective)`, checking cancellation, and persisting structured results/sanitized errors. `ResearchRuntime` remains 100% Celery-agnostic.
+* **Async Research REST API** (`agent/views.py`, `agent/urls.py`):
+  * `POST /api/research/` -> Validates objective, creates `ResearchRun`, dispatches Celery task, and immediately returns `202 Accepted` with `run_id`.
+  * `GET /api/research/<run_id>/` -> Returns current run status or full M6 research result (final answer, evidence, sources, citations, queries).
+  * `GET /api/research/runs/` -> Returns lightweight historical run summaries ordered newest first.
+  * `POST /api/research/<run_id>/cancel/` -> Application-level cancellation for queued or running research runs.
+* **Frontend Async Polling & History UI** (`frontend/src/app/page.jsx`, `frontend/src/app/globals.css`):
+  * Three integrated tabs: `Autonomous Research`, `Knowledge Base`, and `Research History`.
+  * Live polling every 2s for active runs with elapsed timer, status pill, and cancellation button.
+  * Complete Research History view with status badges, execution duration, grounding pills, and instant one-click result viewing.
+  * Preserved M8 Knowledge Base UI and M6 rich evidence displays.
+* **Deterministic Automated Tests**:
+  * 26 backend tests in `agent/tests/test_async_research.py` and `agent/tests/test_api.py` covering model transitions, Celery task execution, cancellation, API 202/status/history/cancellation, and broker failure handling.
+  * 11 frontend tests in `frontend/tests/async-research.test.mjs` and `frontend/tests/knowledge-base.test.mjs` validating 202 parsing, polling lifecycle, M6 result contracts, and history parsing.
+
+Verified:
+
+* 431/431 backend tests pass (100% offline, deterministic)
+* System check (`python manage.py check`) passes with zero issues
+* Model migrations check (`makemigrations --check`) passes with zero changes
+* Frontend Next.js production build passes with zero TypeScript
+* Frontend test suite passes (`npm test`)
+* `git diff --check` passes with zero issues
+* Zero secrets committed
+
+---
+
 ## Development Roadmap
 
 ```text
@@ -311,8 +350,9 @@ M5  Autonomous Research                 COMPLETE
 M6  Research Result & Evidence Quality  COMPLETE
 M7  Research API + Minimal Frontend     COMPLETE
 M8  Knowledge Base & Document Ingestion COMPLETE
-M9  Local/Open Model Expansion
-M10 Deployment
+M9  Async Research & Run History        COMPLETE
+M10 Local/Open Model Expansion
+M11 Deployment
 ```
 
 Milestones are incremental. Each milestone should produce a working, tested increment.

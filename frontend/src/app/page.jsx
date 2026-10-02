@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const SAMPLE_OBJECTIVES = [
   "How do the AURA Model Gateway, RAG pipeline, and Agent Runtime work together?",
@@ -20,6 +20,7 @@ AURA (Autonomous Research & Engineering Agent) is an open-model-first, LLM-agnos
 - **M2-M3 RAG Engine**: Character chunking, pgvector embedding storage, and similarity threshold retrieval.
 - **M4-M6 Autonomous Research**: Multi-step iterative reasoning loop accumulating evidence and verifying citations.
 - **M7-M8 Application Layer**: Minimal Django REST APIs and Next.js interface for research queries and knowledge document ingestion.
+- **M9 Async Engine**: Persistent research run tracking via Celery and Redis with complete historical trace auditability.
 
 ## Ingestion Pipeline
 When a document is ingested, it is segmented into chunks, embedded with 384-dimensional vectors, and stored in PostgreSQL with pgvector for instant vector similarity retrieval.`,
@@ -27,13 +28,24 @@ When a document is ingested, it is segmented into chunks, embedded with 384-dime
 
 export default function Home() {
   // Navigation
-  const [activeTab, setActiveTab] = useState("research"); // 'research' | 'knowledge'
+  const [activeTab, setActiveTab] = useState("research"); // 'research' | 'knowledge' | 'history'
 
   // Research State
   const [objective, setObjective] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+
+  // Active Run Tracking (M9 Polling)
+  const [activeRunId, setActiveRunId] = useState(null);
+  const [activeRunStatus, setActiveRunStatus] = useState(null); // 'queued' | 'running'
+  const [activeRunElapsed, setActiveRunElapsed] = useState(0);
+  const pollTimerRef = useRef(null);
+  const elapsedTimerRef = useRef(null);
+
+  // Research History State
+  const [historyRuns, setHistoryRuns] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   // Knowledge Base State
   const [documents, setDocuments] = useState([]);
@@ -79,11 +91,88 @@ export default function Home() {
     }
   };
 
+  // Fetch Research History
+  const fetchHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const response = await fetch(getApiUrl("research/runs"));
+      if (response.ok) {
+        const data = await response.json();
+        setHistoryRuns(Array.isArray(data) ? data : []);
+      }
+    } catch (err) {
+      console.error("Failed to load research history:", err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchDocuments();
+    fetchHistory();
   }, []);
 
-  // Submit Research Objective
+  // Timer for elapsed seconds during active run
+  useEffect(() => {
+    if (activeRunId && (activeRunStatus === "queued" || activeRunStatus === "running")) {
+      elapsedTimerRef.current = setInterval(() => {
+        setActiveRunElapsed((prev) => prev + 1);
+      }, 1000);
+    } else {
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    }
+    return () => {
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    };
+  }, [activeRunId, activeRunStatus]);
+
+  // Polling loop for active research run
+  useEffect(() => {
+    if (!activeRunId) return;
+
+    const pollStatus = async () => {
+      try {
+        const response = await fetch(`${getApiUrl("research")}${activeRunId}/`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+
+        setActiveRunStatus(data.status);
+
+        if (data.status === "completed") {
+          setResult(data);
+          setActiveRunId(null);
+          setActiveRunStatus(null);
+          setLoading(false);
+          fetchHistory();
+        } else if (data.status === "failed") {
+          const errMsg = data.error || (data.errors && data.errors.join("; ")) || "Research run failed.";
+          setError(errMsg);
+          setActiveRunId(null);
+          setActiveRunStatus(null);
+          setLoading(false);
+          fetchHistory();
+        } else if (data.status === "cancelled") {
+          setError(data.error || "Research was cancelled.");
+          setActiveRunId(null);
+          setActiveRunStatus(null);
+          setLoading(false);
+          fetchHistory();
+        }
+      } catch (err) {
+        console.warn("Polling retry error:", err);
+      }
+    };
+
+    pollTimerRef.current = setInterval(pollStatus, 2000);
+
+    return () => {
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    };
+  }, [activeRunId]);
+
+  // Submit Research Objective (Async POST -> 202)
   const handleResearchSubmit = async (e) => {
     e.preventDefault();
     const trimmed = objective.trim();
@@ -95,6 +184,7 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setActiveRunElapsed(0);
 
     const apiUrl = getApiUrl("research");
 
@@ -113,25 +203,58 @@ export default function Home() {
         data = await response.json();
       } else {
         const text = await response.text();
-        throw new Error(
-          `Server returned HTTP ${response.status}: ${text.slice(0, 120)}`
-        );
+        throw new Error(`Server returned HTTP ${response.status}: ${text.slice(0, 120)}`);
       }
 
-      if (!response.ok) {
-        const errorDetail =
-          data.detail || data.error || `HTTP error ${response.status}`;
+      if (response.status !== 202 && !response.ok) {
+        const errorDetail = data.detail || data.error || `HTTP error ${response.status}`;
         throw new Error(errorDetail);
       }
 
-      setResult(data);
-      if (data.status === "failed" && data.errors && data.errors.length > 0) {
-        setError(`Research finished with error: ${data.errors.join("; ")}`);
-      }
+      // 202 Accepted: Initialize polling
+      setActiveRunId(data.run_id);
+      setActiveRunStatus(data.status || "queued");
+      fetchHistory();
     } catch (err) {
       setError(err.message || "Failed to communicate with research backend.");
-    } finally {
       setLoading(false);
+    }
+  };
+
+  // Cancel Running Research
+  const handleCancelResearch = async () => {
+    if (!activeRunId) return;
+    try {
+      const response = await fetch(`${getApiUrl("research")}${activeRunId}/cancel/`, {
+        method: "POST",
+      });
+      if (response.ok) {
+        setError("Research execution cancelled by user.");
+      }
+    } catch (err) {
+      console.error("Failed to cancel research run:", err);
+    } finally {
+      setActiveRunId(null);
+      setActiveRunStatus(null);
+      setLoading(false);
+      fetchHistory();
+    }
+  };
+
+  // Select Historical Run to View
+  const handleSelectHistoryRun = async (runId) => {
+    try {
+      const response = await fetch(`${getApiUrl("research")}${runId}/`);
+      if (response.ok) {
+        const data = await response.json();
+        setResult(data);
+        setObjective(data.objective || "");
+        setActiveTab("research");
+        setError(null);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    } catch (err) {
+      console.error("Failed to load historical run details:", err);
     }
   };
 
@@ -259,7 +382,7 @@ export default function Home() {
         <header className="header">
           <div className="header-top">
             <h1 className="logo">AURA</h1>
-            <span className="phase-pill">M8 — Knowledge Base</span>
+            <span className="phase-pill">M9 — Async Research</span>
           </div>
           <p className="subtitle">
             Autonomous Research &amp; Engineering Agent
@@ -276,6 +399,9 @@ export default function Home() {
           >
             <span className="tab-icon" aria-hidden="true">🔬</span>
             <span>Autonomous Research</span>
+            {activeRunId && (
+              <span className="tab-pulse-dot" title="Research in progress" />
+            )}
           </button>
           <button
             type="button"
@@ -289,10 +415,307 @@ export default function Home() {
               {documents.length}
             </span>
           </button>
+          <button
+            type="button"
+            id="tab-history"
+            className={`nav-tab ${activeTab === "history" ? "active" : ""}`}
+            onClick={() => {
+              setActiveTab("history");
+              fetchHistory();
+            }}
+          >
+            <span className="tab-icon" aria-hidden="true">⏱</span>
+            <span>Research History</span>
+            <span className="tab-count-badge" id="history-count-badge">
+              {historyRuns.length}
+            </span>
+          </button>
         </nav>
 
         {/* ================================================================= */}
-        {/* TAB 1: KNOWLEDGE BASE VIEW */}
+        {/* TAB 1: AUTONOMOUS RESEARCH VIEW */}
+        {/* ================================================================= */}
+        {activeTab === "research" && (
+          <div className="research-view-container">
+            {/* Input Form Card */}
+            <section className="card" aria-label="Research input">
+              <form onSubmit={handleResearchSubmit} className="form-group">
+                <div className="label">
+                  <label htmlFor="objective-input">Research Objective</label>
+                  <span className="label-hint">
+                    Async persistent run • {documents.length} doc(s) indexed
+                  </span>
+                </div>
+
+                <textarea
+                  id="objective-input"
+                  className="textarea"
+                  placeholder="Enter a research objective (e.g. How do the AURA Model Gateway, RAG pipeline, and Agent Runtime work together?)..."
+                  value={objective}
+                  onChange={(e) => setObjective(e.target.value)}
+                  disabled={loading}
+                  rows={4}
+                />
+
+                {/* Quick Suggestions */}
+                <div className="suggestions-row">
+                  <span className="suggestions-title">Quick prompts:</span>
+                  {SAMPLE_OBJECTIVES.map((sample, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      className="btn-suggestion"
+                      onClick={() => setObjective(sample)}
+                      disabled={loading}
+                    >
+                      {idx === 0
+                        ? "Architecture Overview"
+                        : idx === 1
+                          ? "Citation Integrity"
+                          : "Security & Sandbox"}
+                    </button>
+                  ))}
+                  {documents.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn-suggestion btn-suggestion-kb"
+                      onClick={() => handlePromptFromDoc(documents[0].title)}
+                      disabled={loading}
+                    >
+                      📖 &ldquo;{documents[0].title.slice(0, 20)}...&rdquo;
+                    </button>
+                  )}
+                </div>
+
+                <div className="actions-row">
+                  <button
+                    type="submit"
+                    id="research-submit-btn"
+                    className="btn-research"
+                    disabled={loading || !objective.trim()}
+                  >
+                    {loading ? (
+                      <>
+                        <span className="spinner" aria-hidden="true" />
+                        <span>Queuing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Start Research</span>
+                        <span aria-hidden="true">→</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            {/* Active Research Polling Card */}
+            {activeRunId && (
+              <div className="active-run-card" role="status" aria-live="polite">
+                <div className="active-run-header">
+                  <div className="active-run-status-badge">
+                    <span className="status-spinner-small" aria-hidden="true" />
+                    <span className="active-status-text">
+                      Status: {activeRunStatus || "queued"}
+                    </span>
+                  </div>
+                  <span className="active-run-timer">{activeRunElapsed}s elapsed</span>
+                </div>
+
+                <div className="active-run-body">
+                  <p className="active-run-title">Autonomous Research in Progress</p>
+                  <p className="active-run-sub">
+                    Celery worker is executing iterative planning, RAG retrieval, grounded synthesis, and citation verification in the background.
+                  </p>
+                  <div className="active-run-meta">
+                    <span>Run ID: <code>{activeRunId}</code></span>
+                  </div>
+                </div>
+
+                <div className="active-run-actions">
+                  <button
+                    type="button"
+                    className="btn-cancel-run"
+                    onClick={handleCancelResearch}
+                  >
+                    ✕ Cancel Research Run
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Error State */}
+            {error && (
+              <div className="error-banner" role="alert">
+                <span className="error-icon" aria-hidden="true">⚠️</span>
+                <div className="error-content">
+                  <p className="error-title">Research Notice</p>
+                  <p className="error-message">{error}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Results View */}
+            {result && (
+              <div className="results-container">
+                {/* Meta Summary Bar */}
+                <div className="meta-summary-bar">
+                  <span
+                    className={`badge ${
+                      result.status === "completed"
+                        ? "badge-completed"
+                        : "badge-failed"
+                    }`}
+                  >
+                    ● Status: {result.status}
+                  </span>
+                  <span
+                    className={`badge ${
+                      result.is_grounded ? "badge-grounded" : "badge-ungrounded"
+                    }`}
+                  >
+                    {result.is_grounded
+                      ? "✓ Grounded in Evidence"
+                      : "○ Ungrounded / No Context"}
+                  </span>
+                  <span className="badge badge-info">
+                    Iterations: {result.iteration_count}
+                  </span>
+                  {typeof result.duration_ms === "number" && (
+                    <span className="badge badge-info">
+                      Duration: {(result.duration_ms / 1000).toFixed(2)}s
+                    </span>
+                  )}
+                  <span className="badge badge-info">
+                    Citations: {result.citations?.length || 0}
+                  </span>
+                </div>
+
+                {/* Final Answer Section */}
+                <section className="result-section" aria-labelledby="heading-final-answer">
+                  <div className="section-header">
+                    <h2 id="heading-final-answer" className="section-title">
+                      Final Answer
+                    </h2>
+                  </div>
+                  <div className="final-answer-card">
+                    {result.final_answer ? (
+                      result.final_answer
+                    ) : (
+                      <span className="empty-text">
+                        No synthesized final answer returned.
+                      </span>
+                    )}
+                  </div>
+                </section>
+
+                {/* Queries executed */}
+                {result.queries && result.queries.length > 0 && (
+                  <section className="result-section" aria-labelledby="heading-queries">
+                    <div className="section-header">
+                      <h3 id="heading-queries" className="section-title">
+                        Executed Search Queries
+                      </h3>
+                      <span className="section-count">{result.queries.length}</span>
+                    </div>
+                    <div className="queries-tag-list">
+                      {result.queries.map((q, idx) => (
+                        <span key={idx} className="query-tag">
+                          🔍 {q}
+                        </span>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {/* Sources Section */}
+                <section className="result-section" aria-labelledby="heading-sources">
+                  <div className="section-header">
+                    <h2 id="heading-sources" className="section-title">
+                      Sources
+                    </h2>
+                    <span className="section-count">
+                      {result.sources?.length || 0}
+                    </span>
+                  </div>
+                  {result.sources && result.sources.length > 0 ? (
+                    <div className="sources-grid">
+                      {result.sources.map((src, idx) => (
+                        <div key={idx} className="source-card">
+                          <p className="source-title">
+                            {src.document_title || "Untitled Document"}
+                          </p>
+                          <p className="source-origin">
+                            {src.document_source || "unknown"}
+                          </p>
+                          <div className="source-meta">
+                            <span className="label-hint">
+                              {src.chunk_count || src.chunk_ids?.length || 0} chunk(s)
+                            </span>
+                            <div className="chunk-pills">
+                              {(src.chunk_ids || []).map((cid, cidx) => (
+                                <span key={cidx} className="chunk-pill">
+                                  #{cid}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty-text">
+                      No source documents retrieved for this objective.
+                    </div>
+                  )}
+                </section>
+
+                {/* Evidence Section */}
+                <section className="result-section" aria-labelledby="heading-evidence">
+                  <div className="section-header">
+                    <h2 id="heading-evidence" className="section-title">
+                      Evidence Chunks
+                    </h2>
+                    <span className="section-count">
+                      {result.evidence?.length || 0}
+                    </span>
+                  </div>
+                  {result.evidence && result.evidence.length > 0 ? (
+                    <div className="evidence-list">
+                      {result.evidence.map((ev, idx) => (
+                        <article key={idx} className="evidence-card">
+                          <div className="evidence-header">
+                            <span className="citation-tag">
+                              {ev.citation || `[Chunk: ${ev.chunk_id}]`}
+                            </span>
+                            {typeof ev.score === "number" && (
+                              <span className="score-badge">
+                                Score: {ev.score.toFixed(3)}
+                              </span>
+                            )}
+                          </div>
+                          <div className="evidence-content">{ev.content}</div>
+                          <div className="evidence-footer">
+                            Origin: {ev.document_source || "unknown"}
+                            {ev.document_id ? ` (ID: ${ev.document_id})` : ""}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty-text">
+                      No evidence chunks accumulated.
+                    </div>
+                  )}
+                </section>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ================================================================= */}
+        {/* TAB 2: KNOWLEDGE BASE VIEW (M8) */}
         {/* ================================================================= */}
         {activeTab === "knowledge" && (
           <div className="kb-view-container">
@@ -606,260 +1029,108 @@ export default function Home() {
         )}
 
         {/* ================================================================= */}
-        {/* TAB 2: AUTONOMOUS RESEARCH VIEW */}
+        {/* TAB 3: RESEARCH HISTORY VIEW (M9) */}
         {/* ================================================================= */}
-        {activeTab === "research" && (
-          <div className="research-view-container">
-            {/* Input Form Card */}
-            <section className="card" aria-label="Research input">
-              <form onSubmit={handleResearchSubmit} className="form-group">
-                <div className="label">
-                  <label htmlFor="objective-input">Research Objective</label>
-                  <span className="label-hint">
-                    Autonomous iterative loop • {documents.length} doc(s) indexed
-                  </span>
-                </div>
+        {activeTab === "history" && (
+          <div className="history-view-container">
+            <div className="history-header-bar">
+              <div>
+                <h2 className="history-title">Research History</h2>
+                <p className="history-subtitle">
+                  Persistent log of autonomous research runs and verified evidence traces
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn-refresh-history"
+                onClick={fetchHistory}
+                disabled={historyLoading}
+              >
+                🔄 Refresh
+              </button>
+            </div>
 
-                <textarea
-                  id="objective-input"
-                  className="textarea"
-                  placeholder="Enter a research objective (e.g. How do the AURA Model Gateway, RAG pipeline, and Agent Runtime work together?)..."
-                  value={objective}
-                  onChange={(e) => setObjective(e.target.value)}
-                  disabled={loading}
-                  rows={4}
-                />
-
-                {/* Quick Suggestions */}
-                <div className="suggestions-row">
-                  <span className="suggestions-title">Quick prompts:</span>
-                  {SAMPLE_OBJECTIVES.map((sample, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      className="btn-suggestion"
-                      onClick={() => setObjective(sample)}
-                      disabled={loading}
-                    >
-                      {idx === 0
-                        ? "Architecture Overview"
-                        : idx === 1
-                          ? "Citation Integrity"
-                          : "Security & Sandbox"}
-                    </button>
-                  ))}
-                  {documents.length > 0 && (
-                    <button
-                      type="button"
-                      className="btn-suggestion btn-suggestion-kb"
-                      onClick={() => handlePromptFromDoc(documents[0].title)}
-                      disabled={loading}
-                    >
-                      📖 &ldquo;{documents[0].title.slice(0, 20)}...&rdquo;
-                    </button>
-                  )}
-                </div>
-
-                <div className="actions-row">
-                  <button
-                    type="submit"
-                    id="research-submit-btn"
-                    className="btn-research"
-                    disabled={loading || !objective.trim()}
-                  >
-                    {loading ? (
-                      <>
-                        <span className="spinner" aria-hidden="true" />
-                        <span>Researching...</span>
-                      </>
-                    ) : (
-                      <>
-                        <span>Research</span>
-                        <span aria-hidden="true">→</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
-            </section>
-
-            {/* Loading State */}
-            {loading && (
+            {historyLoading && historyRuns.length === 0 ? (
               <div className="loading-card" role="status" aria-live="polite">
                 <div className="loading-spinner-large" aria-hidden="true" />
-                <div className="loading-text-container">
-                  <p className="loading-title">Autonomous Research in Progress</p>
-                  <p className="loading-subtitle">
-                    Iteratively planning searches, retrieving evidence, synthesizing grounded answers, and verifying citations...
-                  </p>
-                </div>
+                <p className="loading-title">Loading Research History...</p>
               </div>
-            )}
-
-            {/* Error State */}
-            {error && (
-              <div className="error-banner" role="alert">
-                <span className="error-icon" aria-hidden="true">⚠️</span>
-                <div className="error-content">
-                  <p className="error-title">Research Notice</p>
-                  <p className="error-message">{error}</p>
-                </div>
+            ) : historyRuns.length === 0 ? (
+              <div className="history-empty-state">
+                <div className="history-empty-icon" aria-hidden="true">⏱</div>
+                <h3 className="history-empty-title">No research history yet</h3>
+                <p className="history-empty-desc">
+                  Start an objective in the Autonomous Research tab. Your executed runs and evidence results will be safely recorded here.
+                </p>
+                <button
+                  type="button"
+                  className="btn-add-doc"
+                  onClick={() => setActiveTab("research")}
+                >
+                  🔬 Start First Research Run
+                </button>
               </div>
-            )}
-
-            {/* Results View */}
-            {result && (
-              <div className="results-container">
-                {/* Meta Summary Bar */}
-                <div className="meta-summary-bar">
-                  <span
-                    className={`badge ${
-                      result.status === "completed"
-                        ? "badge-completed"
-                        : "badge-failed"
-                    }`}
-                  >
-                    ● Status: {result.status}
-                  </span>
-                  <span
-                    className={`badge ${
-                      result.is_grounded ? "badge-grounded" : "badge-ungrounded"
-                    }`}
-                  >
-                    {result.is_grounded
-                      ? "✓ Grounded in Evidence"
-                      : "○ Ungrounded / No Context"}
-                  </span>
-                  <span className="badge badge-info">
-                    Iterations: {result.iteration_count}
-                  </span>
-                  {typeof result.duration_ms === "number" && (
-                    <span className="badge badge-info">
-                      Duration: {(result.duration_ms / 1000).toFixed(2)}s
-                    </span>
-                  )}
-                  <span className="badge badge-info">
-                    Citations: {result.citations?.length || 0}
-                  </span>
-                </div>
-
-                {/* Final Answer Section */}
-                <section className="result-section" aria-labelledby="heading-final-answer">
-                  <div className="section-header">
-                    <h2 id="heading-final-answer" className="section-title">
-                      Final Answer
-                    </h2>
-                  </div>
-                  <div className="final-answer-card">
-                    {result.final_answer ? (
-                      result.final_answer
-                    ) : (
-                      <span className="empty-text">
-                        No synthesized final answer returned.
-                      </span>
-                    )}
-                  </div>
-                </section>
-
-                {/* Queries executed */}
-                {result.queries && result.queries.length > 0 && (
-                  <section className="result-section" aria-labelledby="heading-queries">
-                    <div className="section-header">
-                      <h3 id="heading-queries" className="section-title">
-                        Executed Search Queries
-                      </h3>
-                      <span className="section-count">{result.queries.length}</span>
-                    </div>
-                    <div className="queries-tag-list">
-                      {result.queries.map((q, idx) => (
-                        <span key={idx} className="query-tag">
-                          🔍 {q}
-                        </span>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                {/* Sources Section */}
-                <section className="result-section" aria-labelledby="heading-sources">
-                  <div className="section-header">
-                    <h2 id="heading-sources" className="section-title">
-                      Sources
-                    </h2>
-                    <span className="section-count">
-                      {result.sources?.length || 0}
-                    </span>
-                  </div>
-                  {result.sources && result.sources.length > 0 ? (
-                    <div className="sources-grid">
-                      {result.sources.map((src, idx) => (
-                        <div key={idx} className="source-card">
-                          <p className="source-title">
-                            {src.document_title || "Untitled Document"}
-                          </p>
-                          <p className="source-origin">
-                            {src.document_source || "unknown"}
-                          </p>
-                          <div className="source-meta">
-                            <span className="label-hint">
-                              {src.chunk_count || src.chunk_ids?.length || 0} chunk(s)
+            ) : (
+              <div className="history-runs-list" id="history-runs-list">
+                {historyRuns.map((run) => (
+                  <article key={run.run_id} className="history-run-card" id={`run-card-${run.run_id}`}>
+                    <div className="history-run-main">
+                      <div className="history-run-info">
+                        <h3 className="history-run-objective">{run.objective}</h3>
+                        <div className="history-run-meta-row">
+                          <span
+                            className={`status-pill ${
+                              run.status === "completed"
+                                ? "status-ready"
+                                : run.status === "failed"
+                                ? "status-error"
+                                : run.status === "running"
+                                ? "status-pending"
+                                : run.status === "cancelled"
+                                ? "status-cancelled"
+                                : "status-queued"
+                            }`}
+                          >
+                            ● {run.status}
+                          </span>
+                          {run.is_grounded && (
+                            <span className="grounded-pill">✓ Grounded</span>
+                          )}
+                          {typeof run.duration_ms === "number" && run.duration_ms > 0 && (
+                            <span className="duration-pill">
+                              ⏱ {(run.duration_ms / 1000).toFixed(1)}s
                             </span>
-                            <div className="chunk-pills">
-                              {(src.chunk_ids || []).map((cid, cidx) => (
-                                <span key={cidx} className="chunk-pill">
-                                  #{cid}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
+                          )}
+                          {run.citation_count > 0 && (
+                            <span className="citations-pill">
+                              🔖 {run.citation_count} citation{run.citation_count === 1 ? "" : "s"}
+                            </span>
+                          )}
+                          {run.created_at && (
+                            <span className="history-date">
+                              {new Date(run.created_at).toLocaleString(undefined, {
+                                month: "short",
+                                day: "numeric",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </span>
+                          )}
                         </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-text">
-                      No source documents retrieved for this objective.
-                    </div>
-                  )}
-                </section>
+                      </div>
 
-                {/* Evidence Section */}
-                <section className="result-section" aria-labelledby="heading-evidence">
-                  <div className="section-header">
-                    <h2 id="heading-evidence" className="section-title">
-                      Evidence Chunks
-                    </h2>
-                    <span className="section-count">
-                      {result.evidence?.length || 0}
-                    </span>
-                  </div>
-                  {result.evidence && result.evidence.length > 0 ? (
-                    <div className="evidence-list">
-                      {result.evidence.map((ev, idx) => (
-                        <article key={idx} className="evidence-card">
-                          <div className="evidence-header">
-                            <span className="citation-tag">
-                              {ev.citation || `[Chunk: ${ev.chunk_id}]`}
-                            </span>
-                            {typeof ev.score === "number" && (
-                              <span className="score-badge">
-                                Score: {ev.score.toFixed(3)}
-                              </span>
-                            )}
-                          </div>
-                          <div className="evidence-content">{ev.content}</div>
-                          <div className="evidence-footer">
-                            Origin: {ev.document_source || "unknown"}
-                            {ev.document_id ? ` (ID: ${ev.document_id})` : ""}
-                          </div>
-                        </article>
-                      ))}
+                      <div className="history-run-actions">
+                        <button
+                          type="button"
+                          className="btn-view-run"
+                          onClick={() => handleSelectHistoryRun(run.run_id)}
+                        >
+                          View Result →
+                        </button>
+                      </div>
                     </div>
-                  ) : (
-                    <div className="empty-text">
-                      No evidence chunks accumulated.
-                    </div>
-                  )}
-                </section>
+                  </article>
+                ))}
               </div>
             )}
           </div>

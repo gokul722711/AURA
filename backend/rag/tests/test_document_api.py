@@ -348,15 +348,23 @@ class DocumentAPITests(TestCase):
             embedding_provider=MockEmbeddingProvider(dimensions=384),
         )
 
-        # 3. Call Research API
-        with patch.object(ResearchView, "get_runtime", return_value=runtime):
+        # 3. Call Research API with eager Celery execution
+        from django.test import override_settings
+
+        with override_settings(CELERY_TASK_ALWAYS_EAGER=True), patch(
+            "agent.tasks.create_research_runtime", return_value=runtime
+        ):
             research_res = self.client.post(
                 "/api/research/",
                 {"objective": "What is the role of the Knowledge Base in AURA?"},
                 format="json",
             )
-            self.assertEqual(research_res.status_code, 200)
-            data = research_res.json()
+            self.assertEqual(research_res.status_code, 202)
+            run_id = research_res.json()["run_id"]
+
+            status_res = self.client.get(f"/api/research/{run_id}/")
+            self.assertEqual(status_res.status_code, 200)
+            data = status_res.json()
             self.assertEqual(data["status"], "completed")
             self.assertTrue(data["is_grounded"])
             self.assertTrue(data["has_evidence"])

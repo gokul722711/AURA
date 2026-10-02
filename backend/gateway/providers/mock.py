@@ -114,7 +114,9 @@ class MockLLMProvider(LLMProvider):
                 data: dict[str, Any] = {}
                 for key, prop_schema in properties.items():
                     prop_type = prop_schema.get("type", "string")
-                    if prop_type == "string":
+                    if "enum" in prop_schema and prop_schema["enum"]:
+                        data[key] = "finish" if "finish" in prop_schema["enum"] else prop_schema["enum"][0]
+                    elif prop_type == "string":
                         data[key] = f"mock_{key}_value"
                     elif prop_type in ("integer", "number"):
                         data[key] = 42

@@ -204,3 +204,15 @@ AI_AGENT = {
     "MAX_TOOL_CALLS": int(os.environ.get("AI_AGENT_MAX_TOOL_CALLS", "15")),
     "MAX_TIME_SECONDS": float(os.environ.get("AI_AGENT_MAX_TIME_SECONDS", "60.0")),
 }
+
+# ---------------------------------------------------------------------------
+# Celery Configuration
+# ---------------------------------------------------------------------------
+
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_ALWAYS_EAGER = os.environ.get("CELERY_TASK_ALWAYS_EAGER", "False").lower() in ("true", "1", "yes")
+CELERY_TASK_EAGER_PROPAGATES = True

@@ -1,4 +1,4 @@
-"""Tests for the Research REST API (M7)."""
+"""Tests for the Research REST API (M9 Async)."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -6,23 +6,29 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from agent.models import ResearchRun
 from agent.planning.base import ActionType, AgentStep, Plan
 from agent.research import ResearchEvidence, ResearchResult, ResearchRuntime
 from agent.state import AgentState, AgentStatus
+from agent.tests.test_research import ScriptedLLMProvider
 from agent.views import ResearchView
 from gateway.base import LLMProvider
 from gateway.gateway import ModelGateway
-from gateway.types import GenerationRequest, GenerationResponse, ProviderMetadata, StructuredOutputRequest, StructuredOutputResponse, UsageInfo
-from rag.models import Document
+from gateway.types import (
+    GenerationRequest,
+    GenerationResponse,
+    ProviderMetadata,
+    StructuredOutputRequest,
+    StructuredOutputResponse,
+    UsageInfo,
+)
 from rag.embeddings.mock import MockEmbeddingProvider
 from rag.ingestion import ingest_document
-
-
-from agent.tests.test_research import ScriptedLLMProvider
+from rag.models import Document
 
 
 class ResearchAPITests(TestCase):
-    """Test suite for POST /api/research/."""
+    """Test suite for POST /api/research/ and related endpoints."""
 
     def setUp(self) -> None:
         self.client = APIClient()
@@ -74,40 +80,28 @@ class ResearchAPITests(TestCase):
         self.assertIn("error", data)
         self.assertIn("JSON object expected", data["error"])
 
-    def test_valid_research_request(self) -> None:
-        """Valid research request executes and returns HTTP 200 with completed status."""
-        mock_result = ResearchResult(
-            objective="How do components interact?",
-            final_answer="The components interact via defined interfaces.",
-            evidence=[],
-            sources=[],
-            queries=[],
-            iteration_count=1,
-            has_evidence=False,
-            status=AgentStatus.COMPLETED,
-            duration_ms=120.0,
-        )
-
-        with patch.object(ResearchView, "get_runtime") as mock_get_runtime:
-            mock_runtime = MagicMock()
-            mock_runtime.run_research.return_value = mock_result
-            mock_get_runtime.return_value = mock_runtime
-
+    def test_valid_research_request_returns_202_accepted(self) -> None:
+        """Valid research request creates a ResearchRun, enqueues task, and returns HTTP 202."""
+        with patch.object(ResearchView, "dispatch_task") as mock_dispatch:
             response = self.client.post(
                 self.url,
                 {"objective": "How do components interact?"},
                 format="json",
             )
 
-            self.assertEqual(response.status_code, 200)
-            mock_runtime.run_research.assert_called_once_with("How do components interact?")
+            self.assertEqual(response.status_code, 202)
             data = response.json()
+            self.assertIn("run_id", data)
+            self.assertEqual(data["status"], "queued")
             self.assertEqual(data["objective"], "How do components interact?")
-            self.assertEqual(data["status"], "completed")
-            self.assertEqual(data["final_answer"], "The components interact via defined interfaces.")
+            mock_dispatch.assert_called_once_with(data["run_id"])
 
-    def test_successful_research_result_serialization(self) -> None:
-        """Response exposes all canonical fields from ResearchResult.to_dict()."""
+            run = ResearchRun.objects.get(id=data["run_id"])
+            self.assertEqual(run.objective, "How do components interact?")
+            self.assertEqual(run.status, ResearchRun.STATUS_QUEUED)
+
+    def test_successful_research_result_serialization_via_detail_api(self) -> None:
+        """Detail endpoint exposes all canonical fields from ResearchResult.to_dict()."""
         evidence_item = ResearchEvidence(
             chunk_id="chunk-test-1",
             document_title="Architecture Guide",
@@ -139,89 +133,51 @@ class ResearchAPITests(TestCase):
             metadata={"source": "api_test"},
         )
 
-        with patch.object(ResearchView, "get_runtime") as mock_get_runtime:
-            mock_runtime = MagicMock()
-            mock_runtime.run_research.return_value = mock_result
-            mock_get_runtime.return_value = mock_runtime
+        run = ResearchRun.objects.create(
+            objective="Analyze architecture",
+            status=ResearchRun.STATUS_COMPLETED,
+            result=mock_result.to_dict(),
+            duration_ms=350.5,
+        )
 
-            response = self.client.post(
-                self.url,
-                {"objective": "Analyze architecture"},
-                format="json",
-            )
+        response = self.client.get(f"/api/research/{run.id}/")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
 
-            self.assertEqual(response.status_code, 200)
-            data = response.json()
-
-            # Verify all canonical fields are present and match
-            self.assertEqual(data["objective"], "Analyze architecture")
-            self.assertEqual(data["final_answer"], "Django routes to ResearchView [Architecture Guide, Chunk: chunk-test-1].")
-            self.assertEqual(len(data["evidence"]), 1)
-            self.assertEqual(data["evidence"][0]["chunk_id"], "chunk-test-1")
-            self.assertEqual(data["evidence"][0]["document_title"], "Architecture Guide")
-            self.assertEqual(data["evidence"][0]["score"], 0.95)
-            self.assertEqual(data["evidence"][0]["citation"], "[Architecture Guide, Chunk: chunk-test-1]")
-            self.assertEqual(len(data["sources"]), 1)
-            self.assertEqual(data["sources"][0]["document_title"], "Architecture Guide")
-            self.assertEqual(data["sources"][0]["chunk_ids"], ["chunk-test-1"])
-            self.assertEqual(data["citations"], ["[Architecture Guide, Chunk: chunk-test-1]"])
-            self.assertEqual(data["queries"], ["architecture guide"])
-            self.assertEqual(data["iteration_count"], 2)
-            self.assertTrue(data["has_evidence"])
-            self.assertTrue(data["is_grounded"])
-            self.assertEqual(data["status"], "completed")
-            self.assertEqual(data["duration_ms"], 350.5)
-            self.assertEqual(data["errors"], [])
-            self.assertEqual(data["metadata"], {"source": "api_test"})
+        self.assertEqual(data["run_id"], str(run.id))
+        self.assertEqual(data["objective"], "Analyze architecture")
+        self.assertEqual(data["final_answer"], "Django routes to ResearchView [Architecture Guide, Chunk: chunk-test-1].")
+        self.assertEqual(len(data["evidence"]), 1)
+        self.assertEqual(data["evidence"][0]["chunk_id"], "chunk-test-1")
+        self.assertEqual(data["evidence"][0]["document_title"], "Architecture Guide")
+        self.assertEqual(data["evidence"][0]["score"], 0.95)
+        self.assertEqual(data["evidence"][0]["citation"], "[Architecture Guide, Chunk: chunk-test-1]")
+        self.assertEqual(len(data["sources"]), 1)
+        self.assertEqual(data["sources"][0]["document_title"], "Architecture Guide")
+        self.assertEqual(data["sources"][0]["chunk_ids"], ["chunk-test-1"])
+        self.assertEqual(data["citations"], ["[Architecture Guide, Chunk: chunk-test-1]"])
+        self.assertEqual(data["queries"], ["architecture guide"])
+        self.assertEqual(data["iteration_count"], 2)
+        self.assertTrue(data["has_evidence"])
+        self.assertTrue(data["is_grounded"])
+        self.assertEqual(data["status"], "completed")
+        self.assertEqual(data["duration_ms"], 350.5)
+        self.assertEqual(data["errors"], [])
+        self.assertEqual(data["metadata"], {"source": "api_test"})
 
     def test_research_failure_response(self) -> None:
-        """API cleanly represents failure when unhandled exception or agent failure occurs."""
-        # Case A: Uncaught runtime exception returns HTTP 500 with clean error payload
-        with patch.object(ResearchView, "get_runtime") as mock_get_runtime:
-            mock_runtime = MagicMock()
-            mock_runtime.run_research.side_effect = RuntimeError("Inference connection timed out")
-            mock_get_runtime.return_value = mock_runtime
-
-            response = self.client.post(
-                self.url,
-                {"objective": "Test failure handling"},
-                format="json",
-            )
-
-            self.assertEqual(response.status_code, 500)
-            data = response.json()
-            self.assertEqual(data["error"], "Research execution failed.")
-            self.assertEqual(data["status"], "failed")
-            self.assertIn("timed out", data["detail"])
-
-        # Case B: Runtime returns a result with status FAILED and error messages
-        failed_result = ResearchResult(
+        """API cleanly represents failure when unhandled exception occurs."""
+        run = ResearchRun.objects.create(
             objective="Exceed limits",
-            final_answer="",
-            evidence=[],
-            sources=[],
-            queries=[],
-            iteration_count=5,
-            has_evidence=False,
-            status=AgentStatus.FAILED,
-            duration_ms=500.0,
-            errors=["Execution iteration limit (5) exceeded."],
+            status=ResearchRun.STATUS_FAILED,
+            error_message="Execution iteration limit (5) exceeded.",
         )
-        with patch.object(ResearchView, "get_runtime") as mock_get_runtime:
-            mock_runtime = MagicMock()
-            mock_runtime.run_research.return_value = failed_result
-            mock_get_runtime.return_value = mock_runtime
-
-            response = self.client.post(
-                self.url,
-                {"objective": "Exceed limits"},
-                format="json",
-            )
-
-            self.assertEqual(response.status_code, 200)
-            data = response.json()
-            self.assertEqual(data["status"], "failed")
-            self.assertEqual(data["errors"], ["Execution iteration limit (5) exceeded."])
+        response = self.client.get(f"/api/research/{run.id}/")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "failed")
+        self.assertEqual(data["error"], "Execution iteration limit (5) exceeded.")
+        self.assertEqual(data["errors"], ["Execution iteration limit (5) exceeded."])
 
     @override_settings(AI_GATEWAY={"API_KEY": "nvapi-confidential-secret-key-12345"})
     def test_api_does_not_expose_provider_secrets(self) -> None:
@@ -229,59 +185,20 @@ class ResearchAPITests(TestCase):
         secret_key = "nvapi-confidential-secret-key-12345"
         token_pattern = "sk-live-1234567890abcdef"
 
-        # Case 1: Exception string contains API key and token pattern
-        with patch.object(ResearchView, "get_runtime") as mock_get_runtime:
-            mock_runtime = MagicMock()
-            mock_runtime.run_research.side_effect = RuntimeError(
-                f"Connection failed for {secret_key} with header Bearer {token_pattern}"
-            )
-            mock_get_runtime.return_value = mock_runtime
-
-            response = self.client.post(
-                self.url,
-                {"objective": "Test secret leakage"},
-                format="json",
-            )
-
-            content = response.content.decode("utf-8")
-            self.assertNotIn(secret_key, content)
-            self.assertNotIn(token_pattern, content)
-            self.assertIn("[REDACTED]", content)
-
-        # Case 2: Result data contains accidental secret in errors or metadata
-        secret_result = ResearchResult(
+        run = ResearchRun.objects.create(
             objective="Secret result test",
-            final_answer="Answer mentioning nothing secret.",
-            evidence=[],
-            sources=[],
-            queries=[],
-            iteration_count=1,
-            has_evidence=False,
-            status=AgentStatus.COMPLETED,
-            errors=[f"Warn: failed probe with {secret_key}"],
-            metadata={"auth": f"Bearer {token_pattern}"},
+            status=ResearchRun.STATUS_FAILED,
+            error_message=f"Connection failed for {secret_key} with header Bearer {token_pattern}",
         )
-        with patch.object(ResearchView, "get_runtime") as mock_get_runtime:
-            mock_runtime = MagicMock()
-            mock_runtime.run_research.return_value = secret_result
-            mock_get_runtime.return_value = mock_runtime
 
-            response = self.client.post(
-                self.url,
-                {"objective": "Secret result test"},
-                format="json",
-            )
+        response = self.client.get(f"/api/research/{run.id}/")
+        content = response.content.decode("utf-8")
+        self.assertNotIn(secret_key, content)
+        self.assertNotIn(token_pattern, content)
+        self.assertIn("[REDACTED]", content)
 
-            self.assertEqual(response.status_code, 200)
-            content = response.content.decode("utf-8")
-            self.assertNotIn(secret_key, content)
-            self.assertNotIn(token_pattern, content)
-            data = response.json()
-            self.assertIn("[REDACTED]", data["errors"][0])
-            self.assertIn("[REDACTED]", data["metadata"]["auth"])
-
-    def test_end_to_end_research_execution(self) -> None:
-        """End-to-end execution of ResearchRuntime via ResearchView with ingested knowledge."""
+    def test_end_to_end_async_research_execution(self) -> None:
+        """End-to-end execution of async research with eager Celery task."""
         Document.objects.all().delete()
         ingest_document(
             title="AURA Subsystems",
@@ -305,15 +222,20 @@ class ResearchAPITests(TestCase):
             embedding_provider=MockEmbeddingProvider(dimensions=384),
         )
 
-        with patch.object(ResearchView, "get_runtime", return_value=runtime):
-            response = self.client.post(
+        with override_settings(CELERY_TASK_ALWAYS_EAGER=True), patch(
+            "agent.tasks.create_research_runtime", return_value=runtime
+        ):
+            post_res = self.client.post(
                 self.url,
                 {"objective": "How do Model Gateway and RAG interact?"},
                 format="json",
             )
+            self.assertEqual(post_res.status_code, 202)
+            run_id = post_res.json()["run_id"]
 
-            self.assertEqual(response.status_code, 200)
-            data = response.json()
+            get_res = self.client.get(f"/api/research/{run_id}/")
+            self.assertEqual(get_res.status_code, 200)
+            data = get_res.json()
             self.assertEqual(data["status"], "completed")
             self.assertTrue(data["has_evidence"])
             self.assertTrue(data["is_grounded"])
@@ -322,32 +244,15 @@ class ResearchAPITests(TestCase):
             self.assertIn("Model Gateway routes requests", data["final_answer"])
 
     def test_post_trailing_slash_route_requirement(self) -> None:
-        """POST to /api/research/ succeeds while POST to /api/research triggers APPEND_SLASH behavior."""
-        mock_result = ResearchResult(
-            objective="Trailing slash test",
-            final_answer="Answer with valid slash.",
-            evidence=[],
-            sources=[],
-            queries=[],
-            iteration_count=1,
-            has_evidence=False,
-            status=AgentStatus.COMPLETED,
-        )
-        with patch.object(ResearchView, "get_runtime") as mock_get_runtime:
-            mock_runtime = MagicMock()
-            mock_runtime.run_research.return_value = mock_result
-            mock_get_runtime.return_value = mock_runtime
-
-            # Trailing-slash route succeeds as expected by Django/DRF
+        """POST to /api/research/ succeeds with 202."""
+        with patch.object(ResearchView, "dispatch_task"):
             res_with_slash = self.client.post(
                 "/api/research/",
                 {"objective": "Trailing slash test"},
                 format="json",
             )
-            self.assertEqual(res_with_slash.status_code, 200)
+            self.assertEqual(res_with_slash.status_code, 202)
 
-        # Without trailing slash, Django with APPEND_SLASH=True cannot redirect POST data
-        # so it either raises RuntimeError or returns 500/301/404
         try:
             res_without_slash = self.client.post(
                 "/api/research",
@@ -357,39 +262,3 @@ class ResearchAPITests(TestCase):
             self.assertIn(res_without_slash.status_code, (301, 404, 500))
         except RuntimeError as exc:
             self.assertIn("APPEND_SLASH", str(exc))
-
-    def test_research_view_wiring_constructs_runtime_with_model_gateway(self) -> None:
-        """ResearchView.get_runtime() constructs ResearchRuntime with ModelGateway, not ResearchView."""
-        view = ResearchView()
-        runtime = view.get_runtime()
-        self.assertIsInstance(runtime, ResearchRuntime)
-        self.assertIsInstance(runtime.planner.gateway, ModelGateway)
-        self.assertNotIsInstance(runtime.planner.gateway, ResearchView)
-
-    def test_api_request_reaches_structured_decision_path(self) -> None:
-        """API request without patching get_runtime reaches gateway structured_output decision path."""
-        scripted_provider = ScriptedLLMProvider(
-            responses=[
-                json.dumps({"decision": "finish"}),
-                "Direct synthesis answering the objective.",
-            ]
-        )
-        custom_gateway = ModelGateway(provider=scripted_provider)
-
-        # Patch get_gateway so create_research_runtime uses custom_gateway;
-        # ResearchView.get_runtime itself is NOT mocked.
-        with patch("agent.research.get_gateway", return_value=custom_gateway):
-            response = self.client.post(
-                self.url,
-                {"objective": "Direct gateway wiring test"},
-                format="json",
-            )
-            self.assertEqual(response.status_code, 200)
-            data = response.json()
-            self.assertEqual(data["status"], "completed")
-            self.assertIn("The available knowledge base did not provide sufficient supporting evidence", data["final_answer"])
-            self.assertGreaterEqual(len(scripted_provider.recorded_structured_requests), 1)
-            self.assertEqual(
-                scripted_provider.recorded_structured_requests[0].schema.get("properties", {}).get("decision", {}).get("enum"),
-                ["continue", "finish"],
-            )
