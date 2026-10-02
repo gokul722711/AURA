@@ -1003,3 +1003,94 @@ class ResearchResultIntegrityTests(TestCase):
             self.assertEqual(s["document_title"], "Overview")
             self.assertEqual(s["document_source"], "unknown")
             self.assertEqual(s["chunk_count"], 1)
+
+    def test_research_planner_propagates_timeout_budget_to_structured_decision(self) -> None:
+        """Verify ResearchPlanner includes remaining timeout budget in structured_output metadata."""
+        from unittest.mock import MagicMock
+        from agent.execution.limits import LimitTracker
+
+        mock_gateway = MagicMock()
+        mock_gateway.structured_output.return_value = StructuredOutputResponse(
+            data={"decision": "continue", "query": "quantum algorithms", "tool": "rag_search"},
+            raw_text='{"decision": "continue", "query": "quantum algorithms", "tool": "rag_search"}',
+            provider="mock",
+            model="mock-model",
+        )
+
+        planner = ResearchPlanner(gateway=mock_gateway, mode="knowledge_base")
+        state = AgentState.create("Research quantum computing")
+        tracker = LimitTracker(ExecutionLimits(max_time_seconds=45.0))
+
+        planner.plan("Research quantum computing", state, tracker=tracker)
+
+        mock_gateway.structured_output.assert_called_once()
+        req = mock_gateway.structured_output.call_args[0][0]
+        self.assertIn("timeout", req.metadata)
+        self.assertAlmostEqual(req.metadata["timeout"], 45.0, delta=0.5)
+
+    def test_research_planner_propagates_timeout_budget_to_grounded_synthesis(self) -> None:
+        """Verify ResearchPlanner includes remaining timeout budget in synthesis generate metadata."""
+        from unittest.mock import MagicMock
+        from agent.execution.limits import LimitTracker
+
+        mock_gateway = MagicMock()
+        mock_gateway.structured_output.return_value = StructuredOutputResponse(
+            data={"decision": "finish"},
+            raw_text='{"decision": "finish"}',
+            provider="mock",
+            model="mock-model",
+        )
+        mock_gateway.generate.return_value = GenerationResponse(
+            text="Grounded final answer with citations",
+            provider="mock",
+            model="mock-model",
+        )
+
+        planner = ResearchPlanner(gateway=mock_gateway, mode="knowledge_base")
+        state = AgentState.create("Research quantum computing")
+        tracker = LimitTracker(ExecutionLimits(max_time_seconds=50.0))
+
+        # Add evidence chunk to state
+        state.record_tool_result({
+            "tool_name": "rag_search",
+            "is_error": False,
+            "output": [{
+                "chunk_id": "c1",
+                "document_title": "Quantum Paper",
+                "document_source": "arxiv",
+                "content": "Quantum computing uses qubits.",
+            }],
+        })
+
+        plan = planner.plan("Research quantum computing", state, tracker=tracker)
+
+        mock_gateway.generate.assert_called_once()
+        req = mock_gateway.generate.call_args[0][0]
+        self.assertIn("timeout", req.metadata)
+        self.assertAlmostEqual(req.metadata["timeout"], 50.0, delta=0.5)
+        self.assertEqual(plan.steps[0].payload["final_answer"], "Grounded final answer with citations")
+
+    def test_research_planner_propagates_timeout_budget_to_model_knowledge_synthesis(self) -> None:
+        """Verify ResearchPlanner includes remaining timeout budget in model_knowledge synthesis."""
+        from unittest.mock import MagicMock
+        from agent.execution.limits import LimitTracker
+
+        mock_gateway = MagicMock()
+        mock_gateway.generate.return_value = GenerationResponse(
+            text="Pretrained knowledge answer",
+            provider="mock",
+            model="mock-model",
+        )
+
+        planner = ResearchPlanner(gateway=mock_gateway, mode="model_knowledge")
+        state = AgentState.create("What is gravity?")
+        tracker = LimitTracker(ExecutionLimits(max_time_seconds=28.0))
+
+        plan = planner.plan("What is gravity?", state, tracker=tracker)
+
+
+        mock_gateway.generate.assert_called_once()
+        req = mock_gateway.generate.call_args[0][0]
+        self.assertIn("timeout", req.metadata)
+        self.assertAlmostEqual(req.metadata["timeout"], 28.0, delta=0.5)
+        self.assertEqual(plan.steps[0].payload["final_answer"], "Pretrained knowledge answer")

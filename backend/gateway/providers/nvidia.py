@@ -1,6 +1,7 @@
 """NVIDIA LLM Provider using OpenAI-compatible client."""
 
 import json
+import math
 import os
 from collections.abc import Iterator
 from typing import Any
@@ -71,6 +72,60 @@ class NvidiaLLMProvider(LLMProvider):
             capabilities=ALL_CAPABILITIES,
         )
 
+    def _resolve_timeout_and_retries(
+        self, metadata: dict[str, Any] | None
+    ) -> tuple[float | None, int | None]:
+        """Resolve effective per-request timeout and max_retries bounded by runtime budget."""
+        if not metadata:
+            return None, None
+
+        timeout_val = metadata.get("timeout")
+        if timeout_val is None:
+            timeout_val = metadata.get("timeout_seconds")
+        if timeout_val is None:
+            timeout_val = metadata.get("remaining_seconds")
+
+        if timeout_val is None:
+            return None, None
+
+        try:
+            budget = float(timeout_val)
+        except (ValueError, TypeError):
+            return None, None
+
+        if math.isnan(budget) or math.isinf(budget):
+            return None, None
+
+        # If budget is already exhausted or non-positive, floor to minimal positive timeout
+        # to trigger immediate timeout without retries.
+        if budget <= 0.0:
+            return 0.001, 0
+
+        # Effective timeout is capped by configured provider timeout (self.timeout) and budget
+        effective_timeout = min(self.timeout, max(0.001, budget))
+
+        client_max_retries = getattr(self._client, "max_retries", 2)
+        if not isinstance(client_max_retries, int) or client_max_retries < 0:
+            client_max_retries = 2
+
+        # Provider retries introduce both an additional request attempt (costing up to effective_timeout)
+        # and exponential backoff delay (at least ~0.5s - 1.0s per retry).
+        # To strictly ensure retries cannot cause the model call to exceed the remaining runtime budget:
+        # (1 + retries) * effective_timeout + retries * retry_delay_buffer <= budget
+        retry_delay_buffer = 1.0
+        time_per_retry = effective_timeout + retry_delay_buffer
+        available_retry_time = budget - effective_timeout
+
+        if available_retry_time <= 0.0:
+            allowed_retries = 0
+        else:
+            allowed_retries = max(0, int(available_retry_time // time_per_retry))
+
+        effective_retries = min(client_max_retries, allowed_retries)
+
+        return effective_timeout, effective_retries
+
+
     def generate(self, request: GenerationRequest) -> GenerationResponse:
         """Generate text response using NVIDIA OpenAI-compatible API."""
         model = request.model or self.model_name
@@ -84,10 +139,20 @@ class NvidiaLLMProvider(LLMProvider):
         if request.max_tokens is not None:
             kwargs["max_tokens"] = request.max_tokens
 
+        effective_timeout, effective_retries = self._resolve_timeout_and_retries(request.metadata)
+        if effective_timeout is not None:
+            kwargs["timeout"] = effective_timeout
+
+        original_retries = getattr(self._client, "max_retries", None)
         try:
+            if effective_retries is not None and hasattr(self._client, "max_retries"):
+                self._client.max_retries = effective_retries
             completion = self._client.chat.completions.create(**kwargs)
         except Exception as exc:
             raise GenerationError(f"NVIDIA model generation failed: {exc}") from exc
+        finally:
+            if original_retries is not None and effective_retries is not None and hasattr(self._client, "max_retries"):
+                self._client.max_retries = original_retries
 
         choice = completion.choices[0]
         text = choice.message.content or ""
@@ -124,7 +189,14 @@ class NvidiaLLMProvider(LLMProvider):
         if request.max_tokens is not None:
             kwargs["max_tokens"] = request.max_tokens
 
+        effective_timeout, effective_retries = self._resolve_timeout_and_retries(request.metadata)
+        if effective_timeout is not None:
+            kwargs["timeout"] = effective_timeout
+
+        original_retries = getattr(self._client, "max_retries", None)
         try:
+            if effective_retries is not None and hasattr(self._client, "max_retries"):
+                self._client.max_retries = effective_retries
             stream_resp = self._client.chat.completions.create(**kwargs)
             for idx, chunk in enumerate(stream_resp):
                 if not getattr(chunk, "choices", None):
@@ -139,6 +211,9 @@ class NvidiaLLMProvider(LLMProvider):
                 )
         except Exception as exc:
             raise GenerationError(f"NVIDIA streaming failed: {exc}") from exc
+        finally:
+            if original_retries is not None and effective_retries is not None and hasattr(self._client, "max_retries"):
+                self._client.max_retries = original_retries
 
     def structured_output(
         self, request: StructuredOutputRequest
@@ -173,10 +248,21 @@ class NvidiaLLMProvider(LLMProvider):
         if request.max_tokens is not None:
             kwargs["max_tokens"] = request.max_tokens
 
+        effective_timeout, effective_retries = self._resolve_timeout_and_retries(request.metadata)
+        if effective_timeout is not None:
+            kwargs["timeout"] = effective_timeout
+
+        original_retries = getattr(self._client, "max_retries", None)
         try:
+            if effective_retries is not None and hasattr(self._client, "max_retries"):
+                self._client.max_retries = effective_retries
             completion = self._client.chat.completions.create(**kwargs)
         except Exception as exc:
             raise GenerationError(f"NVIDIA structured output generation failed: {exc}") from exc
+        finally:
+            if original_retries is not None and effective_retries is not None and hasattr(self._client, "max_retries"):
+                self._client.max_retries = original_retries
+
 
         choice = completion.choices[0]
         raw_text = choice.message.content or ""

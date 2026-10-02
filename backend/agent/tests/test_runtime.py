@@ -5,7 +5,7 @@ from django.test import SimpleTestCase
 
 from agent.events.types import ExecutionEvent
 from agent.execution.limits import ExecutionLimits
-from agent.planning.base import ActionType, AgentStep
+from agent.planning.base import ActionType, AgentStep, Plan, Planner
 from agent.planning.mock import MockPlanner
 from agent.runtime import AgentRunResult, AgentRuntime
 from agent.state import AgentStatus
@@ -194,7 +194,7 @@ class AgentRuntimeTests(SimpleTestCase):
             limits=limits,
         )
         # Simulate monotonic time jumping past max_time_seconds on check
-        with patch("time.monotonic", side_effect=[0.0, 0.0, 5.0, 10.0, 15.0]):
+        with patch("time.monotonic", side_effect=[0.0, 0.0, 5.0, 5.0, 10.0, 15.0]):
             result = runtime.run("Testing timeout")
 
         self.assertFalse(result.is_success)
@@ -284,3 +284,96 @@ class AgentRuntimeTests(SimpleTestCase):
         self.assertIn("trace", data)
         self.assertEqual(data["state"]["status"], "completed")
         self.assertGreater(data["trace"]["event_count"], 0)
+
+    def test_planner_with_tracker_param_receives_tracker(self):
+        """Planner accepting explicit tracker parameter receives it."""
+        received_trackers = []
+        call_count = 0
+
+        class TrackerPlanner(Planner):
+            def plan(self, objective, state, tracker=None):
+                nonlocal call_count
+                call_count += 1
+                received_trackers.append(tracker)
+                step = AgentStep(
+                    step_id="finish-1",
+                    action_type=ActionType.FINISH,
+                    description="Done",
+                    payload={"final_answer": "ok"},
+                )
+                return Plan(plan_id="p1", objective=objective, steps=(step,))
+
+        runtime = AgentRuntime(planner=TrackerPlanner())
+        result = runtime.run("Test tracker param")
+        self.assertEqual(call_count, 1)
+        self.assertEqual(len(received_trackers), 1)
+        self.assertIsNotNone(received_trackers[0])
+        self.assertTrue(hasattr(received_trackers[0], "remaining_seconds"))
+        self.assertEqual(result.status, AgentStatus.COMPLETED)
+
+    def test_legacy_planner_without_tracker_param_works(self):
+        """Legacy planner accepting only (objective, state) works without error."""
+        call_count = 0
+
+        class LegacyPlanner(Planner):
+            def plan(self, objective, state):
+                nonlocal call_count
+                call_count += 1
+                step = AgentStep(
+                    step_id="finish-legacy",
+                    action_type=ActionType.FINISH,
+                    description="Legacy done",
+                    payload={"final_answer": "legacy ok"},
+                )
+                return Plan(plan_id="p-legacy", objective=objective, steps=(step,))
+
+        runtime = AgentRuntime(planner=LegacyPlanner())
+        result = runtime.run("Test legacy planner")
+        self.assertEqual(call_count, 1)
+        self.assertEqual(result.status, AgentStatus.COMPLETED)
+        self.assertEqual(result.final_output, "legacy ok")
+
+    def test_planner_with_kwargs_receives_tracker(self):
+        """Planner accepting **kwargs receives tracker via kwargs."""
+        received_kwargs = []
+        call_count = 0
+
+        class KwargsPlanner(Planner):
+            def plan(self, objective, state, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                received_kwargs.append(kwargs)
+                step = AgentStep(
+                    step_id="finish-kw",
+                    action_type=ActionType.FINISH,
+                    description="Kwargs done",
+                    payload={"final_answer": "kwargs ok"},
+                )
+                return Plan(plan_id="p-kw", objective=objective, steps=(step,))
+
+        runtime = AgentRuntime(planner=KwargsPlanner())
+        result = runtime.run("Test kwargs planner")
+        self.assertEqual(call_count, 1)
+        self.assertEqual(len(received_kwargs), 1)
+        self.assertIn("tracker", received_kwargs[0])
+        self.assertTrue(hasattr(received_kwargs[0]["tracker"], "remaining_seconds"))
+        self.assertEqual(result.status, AgentStatus.COMPLETED)
+
+    def test_internal_type_error_in_planner_propagates_without_second_call(self):
+        """Internal TypeError inside a planner is not caught or retried by _call_planner."""
+        call_count = 0
+
+        class BuggyPlanner(Planner):
+            def plan(self, objective, state, tracker=None):
+                nonlocal call_count
+                call_count += 1
+                # Simulate an internal bug raising TypeError
+                raise TypeError("Internal planner bug: unsupported operand type")
+
+        runtime = AgentRuntime(planner=BuggyPlanner())
+        result = runtime.run("Test internal type error")
+
+        # Must strictly be called only once
+        self.assertEqual(call_count, 1)
+        self.assertEqual(result.status, AgentStatus.FAILED)
+        self.assertIn("Internal planner bug: unsupported operand type", result.state.errors[0])

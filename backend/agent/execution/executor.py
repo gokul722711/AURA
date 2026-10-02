@@ -49,7 +49,7 @@ class StepExecutor:
         start_time = time.monotonic()
 
         if step.action_type == ActionType.MODEL:
-            record = self._execute_model_step(step, state, trace)
+            record = self._execute_model_step(step, state, trace, tracker)
         elif step.action_type == ActionType.TOOL:
             record = self._execute_tool_step(step, state, trace, tracker)
         elif step.action_type == ActionType.FINISH:
@@ -68,6 +68,7 @@ class StepExecutor:
         step: AgentStep,
         state: AgentState,
         trace: ExecutionTrace,
+        tracker: LimitTracker | None = None,
     ) -> StepExecutionRecord:
         prompt = step.payload.get("prompt")
         if not prompt or not isinstance(prompt, str):
@@ -86,11 +87,16 @@ class StepExecutor:
             Message(role="user", content=prompt),
         ]
 
+        metadata: dict[str, Any] = dict(step.payload.get("metadata") or {})
+        if tracker is not None:
+            metadata["timeout"] = tracker.remaining_seconds()
+
         try:
             req = GenerationRequest(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                metadata=metadata,
             )
             response = self.gateway.generate(req)
         except Exception as exc:

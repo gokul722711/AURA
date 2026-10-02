@@ -63,6 +63,11 @@ class LimitTracker:
                 f"Tool call limit of {self.limits.max_tool_calls} exceeded."
             )
 
+    def remaining_seconds(self) -> float:
+        """Calculate the remaining portion of max_time_seconds using monotonic clock."""
+        elapsed = time.monotonic() - self.start_time
+        return max(0.0, self.limits.max_time_seconds - elapsed)
+
     def check_time(self) -> None:
         """Check elapsed execution time against timeout limit."""
         elapsed = time.monotonic() - self.start_time

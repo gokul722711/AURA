@@ -1,5 +1,6 @@
 """AgentRuntime orchestrating state, planning, step execution, and boundaries."""
 
+import inspect
 from dataclasses import dataclass
 from typing import Any
 
@@ -115,6 +116,26 @@ class AgentRuntime:
         if self._cancelled:
             raise ExecutionCancelledError(self._cancel_reason)
 
+    def _call_planner(
+        self,
+        objective: str,
+        state: AgentState,
+        tracker: LimitTracker,
+    ) -> Any:
+        """Call planner passing tracker if supported, while preserving backwards compatibility."""
+        try:
+            sig = inspect.signature(self.planner.plan)
+            supports_tracker = "tracker" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+        except Exception:
+            supports_tracker = False
+
+        if supports_tracker:
+            return self.planner.plan(objective, state, tracker=tracker)
+        return self.planner.plan(objective, state)
+
+
     def run(self, objective: str, metadata: dict[str, Any] | None = None) -> AgentRunResult:
         """Execute an agent run for the specified objective.
 
@@ -148,7 +169,7 @@ class AgentRuntime:
             self._check_cancellation(state, trace)
 
             # 4. Planning phase
-            plan = self.planner.plan(objective, state)
+            plan = self._call_planner(objective, state, tracker)
             state.plan = plan
 
             steps_payload = [
@@ -176,7 +197,7 @@ class AgentRuntime:
                 step = plan.get_step(state.current_step_index)
                 if step is None and getattr(self.planner, "supports_replanning", False):
                     # Planner supports dynamic replanning based on accumulated state
-                    new_plan = self.planner.plan(objective, state)
+                    new_plan = self._call_planner(objective, state, tracker)
                     if new_plan is not None and len(new_plan.steps) > 0:
                         plan = new_plan
                         state.plan = plan

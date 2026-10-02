@@ -132,3 +132,61 @@ class StepExecutorTests(SimpleTestCase):
         )
         with self.assertRaises(ModelExecutionError):
             self.executor.execute_step(step, self.state, self.trace, self.tracker)
+
+    def test_execute_model_step_passes_timeout_budget_in_metadata(self):
+        from unittest.mock import MagicMock
+
+        mock_gw = MagicMock()
+        mock_gw.generate.return_value = MagicMock(
+            text="response",
+            provider="mock",
+            model="mock",
+            usage=None,
+        )
+        executor = StepExecutor(
+            gateway=mock_gw,
+            registry=self.registry,
+            policy=self.policy,
+        )
+        tracker = LimitTracker(ExecutionLimits(max_time_seconds=42.0))
+        step = AgentStep(
+            step_id="timed-model",
+            action_type=ActionType.MODEL,
+            description="Check timeout metadata",
+            payload={"prompt": "Say hello"},
+        )
+        executor.execute_step(step, self.state, self.trace, tracker)
+
+        mock_gw.generate.assert_called_once()
+        req = mock_gw.generate.call_args[0][0]
+        self.assertIn("timeout", req.metadata)
+        self.assertAlmostEqual(req.metadata["timeout"], 42.0, delta=0.5)
+
+    def test_execute_model_step_preserves_custom_metadata_with_timeout(self):
+        from unittest.mock import MagicMock
+
+        mock_gw = MagicMock()
+        mock_gw.generate.return_value = MagicMock(
+            text="response",
+            provider="mock",
+            model="mock",
+            usage=None,
+        )
+        executor = StepExecutor(
+            gateway=mock_gw,
+            registry=self.registry,
+            policy=self.policy,
+        )
+        tracker = LimitTracker(ExecutionLimits(max_time_seconds=15.0))
+        step = AgentStep(
+            step_id="custom-meta-model",
+            action_type=ActionType.MODEL,
+            description="Check custom metadata preservation",
+            payload={"prompt": "Say hello", "metadata": {"custom_tag": "research_mode"}},
+        )
+        executor.execute_step(step, self.state, self.trace, tracker)
+
+        req = mock_gw.generate.call_args[0][0]
+        self.assertEqual(req.metadata["custom_tag"], "research_mode")
+        self.assertIn("timeout", req.metadata)
+        self.assertAlmostEqual(req.metadata["timeout"], 15.0, delta=0.5)

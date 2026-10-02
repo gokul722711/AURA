@@ -1,7 +1,7 @@
 """Deterministic MockPlanner for offline, repeatable testing."""
 
 import uuid
-from typing import Sequence
+from typing import Any, Sequence
 
 from agent.planning.base import ActionType, AgentStep, Plan, Planner
 from agent.state import AgentState
@@ -18,7 +18,12 @@ class MockPlanner(Planner):
         self._preconfigured_steps = tuple(steps) if steps is not None else None
         self.call_count = 0
 
-    def plan(self, objective: str, state: AgentState) -> Plan:
+    def plan(
+        self,
+        objective: str,
+        state: AgentState,
+        tracker: Any = None,
+    ) -> Plan:
         self.call_count += 1
 
         if self._preconfigured_steps is not None:

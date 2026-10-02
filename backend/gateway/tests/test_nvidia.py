@@ -227,3 +227,209 @@ class NvidiaLLMProviderTests(SimpleTestCase):
                 api_key="test-api-key-123",
                 timeout=25.0,
             )
+
+    def test_provider_timeout_capped_by_configured_ai_timeout(self) -> None:
+        """Verify request timeout metadata is capped by configured provider timeout."""
+        choice_mock = MagicMock()
+        choice_mock.message.content = "Response"
+        choice_mock.finish_reason = "stop"
+        self.mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[choice_mock], usage=None
+        )
+
+        # Provider configured with timeout=30.0, request asks for 120.0
+        req = GenerationRequest(
+            messages=[Message(role="user", content="Hello")],
+            metadata={"timeout": 120.0},
+        )
+        self.provider.generate(req)
+
+        call_kwargs = self.mock_client.chat.completions.create.call_args.kwargs
+        self.assertEqual(call_kwargs.get("timeout"), 30.0)
+
+    def test_provider_timeout_smaller_when_remaining_budget_smaller(self) -> None:
+        """Verify request timeout becomes smaller when remaining agent budget is smaller."""
+        choice_mock = MagicMock()
+        choice_mock.message.content = "Response"
+        choice_mock.finish_reason = "stop"
+        self.mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[choice_mock], usage=None
+        )
+
+        # Provider configured with timeout=30.0, remaining budget is 12.5s
+        req = GenerationRequest(
+            messages=[Message(role="user", content="Hello")],
+            metadata={"timeout": 12.5},
+        )
+        self.provider.generate(req)
+
+        call_kwargs = self.mock_client.chat.completions.create.call_args.kwargs
+        self.assertEqual(call_kwargs.get("timeout"), 12.5)
+
+    def test_provider_timeout_preserves_configured_timeout_when_no_metadata(self) -> None:
+        """Verify no timeout override is passed to create when metadata has no timeout."""
+        choice_mock = MagicMock()
+        choice_mock.message.content = "Response"
+        choice_mock.finish_reason = "stop"
+        self.mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[choice_mock], usage=None
+        )
+
+        req = GenerationRequest(
+            messages=[Message(role="user", content="Hello")],
+            metadata={},
+        )
+        self.provider.generate(req)
+
+        call_kwargs = self.mock_client.chat.completions.create.call_args.kwargs
+        self.assertNotIn("timeout", call_kwargs)
+
+    def test_provider_retries_bounded_by_remaining_budget(self) -> None:
+        """Verify client max_retries is constrained by remaining budget during execution and restored."""
+        self.mock_client.max_retries = 2
+
+        recorded_retries = []
+
+        def fake_create(**kwargs):
+            recorded_retries.append(self.mock_client.max_retries)
+            choice = MagicMock()
+            choice.message.content = "Ok"
+            choice.finish_reason = "stop"
+            return MagicMock(choices=[choice], usage=None)
+
+        self.mock_client.chat.completions.create.side_effect = fake_create
+
+        # Budget is 15.0s, provider timeout is 30.0s -> effective timeout is 15.0s.
+        # int(15 // 15) = 1 attempt. Allowed retries = 0.
+        req = GenerationRequest(
+            messages=[Message(role="user", content="Hi")],
+            metadata={"timeout": 15.0},
+        )
+        self.provider.generate(req)
+
+        self.assertEqual(recorded_retries, [0])
+        # Restored after call
+        self.assertEqual(self.mock_client.max_retries, 2)
+
+    def test_structured_output_uses_timeout_budget(self) -> None:
+        """Verify structured output calls propagate the timeout budget."""
+        choice_mock = MagicMock()
+        choice_mock.message.content = '{"decision": "continue", "query": "quantum"}'
+        choice_mock.finish_reason = "stop"
+        self.mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[choice_mock], usage=None
+        )
+
+        req = StructuredOutputRequest(
+            messages=[Message(role="user", content="Plan next step")],
+            schema={"properties": {"decision": {"type": "string"}}},
+            metadata={"timeout": 8.0},
+        )
+        resp = self.provider.structured_output(req)
+
+        self.assertEqual(resp.data, {"decision": "continue", "query": "quantum"})
+        call_kwargs = self.mock_client.chat.completions.create.call_args.kwargs
+        self.assertEqual(call_kwargs.get("timeout"), 8.0)
+
+    def test_existing_timeout_error_behavior_remains_intact(self) -> None:
+        """Verify timeout or connection errors are wrapped in GenerationError."""
+        self.mock_client.chat.completions.create.side_effect = TimeoutError("Request timed out")
+
+        req = GenerationRequest(
+            messages=[Message(role="user", content="Hello")],
+            metadata={"timeout": 5.0},
+        )
+        with self.assertRaises(GenerationError) as ctx:
+            self.provider.generate(req)
+        self.assertIn("NVIDIA model generation failed", str(ctx.exception))
+
+    def test_provider_retries_accounts_for_backoff_delay(self) -> None:
+        """Verify retries account for backoff sleep delay so retries never exceed budget."""
+        self.mock_client.max_retries = 2
+        recorded_retries = []
+
+        def fake_create(**kwargs):
+            recorded_retries.append(self.mock_client.max_retries)
+            choice = MagicMock()
+            choice.message.content = "Ok"
+            choice.finish_reason = "stop"
+            return MagicMock(choices=[choice], usage=None)
+
+        self.mock_client.chat.completions.create.side_effect = fake_create
+
+        # Provider timeout is 30.0s.
+        # Budget = 60.0s: Attempt 1 takes 30s. Remaining = 30s.
+        # A retry takes 30s timeout + 1s backoff = 31s > 30s remaining.
+        # Therefore allowed retries must be 0 to prevent exceeding the 60s budget.
+        req_60 = GenerationRequest(
+            messages=[Message(role="user", content="Hi")],
+            metadata={"timeout": 60.0},
+        )
+        self.provider.generate(req_60)
+        self.assertEqual(recorded_retries[-1], 0)
+
+        # Budget = 65.0s: Attempt 1 takes 30s. Remaining = 35s >= 31s.
+        # 1 retry fits safely within the remaining budget.
+        req_65 = GenerationRequest(
+            messages=[Message(role="user", content="Hi")],
+            metadata={"timeout": 65.0},
+        )
+        self.provider.generate(req_65)
+        self.assertEqual(recorded_retries[-1], 1)
+
+        # Budget = 95.0s: Attempt 1 (30s) + 2 retries (2 * 31s = 62s) = 92s <= 95s.
+        # 2 retries fit safely within the remaining budget.
+        req_95 = GenerationRequest(
+            messages=[Message(role="user", content="Hi")],
+            metadata={"timeout": 95.0},
+        )
+        self.provider.generate(req_95)
+        self.assertEqual(recorded_retries[-1], 2)
+
+    def test_provider_handles_nan_and_inf_timeout_gracefully(self) -> None:
+        """Verify NaN or Inf timeout metadata does not crash and preserves default behavior."""
+        choice_mock = MagicMock()
+        choice_mock.message.content = "Response"
+        choice_mock.finish_reason = "stop"
+        self.mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[choice_mock], usage=None
+        )
+
+        for invalid_val in [float("nan"), float("inf"), float("-inf")]:
+            req = GenerationRequest(
+                messages=[Message(role="user", content="Hi")],
+                metadata={"timeout": invalid_val},
+            )
+            self.provider.generate(req)
+            call_kwargs = self.mock_client.chat.completions.create.call_args.kwargs
+            self.assertNotIn("timeout", call_kwargs)
+
+    def test_provider_handles_zero_and_negative_timeout_gracefully(self) -> None:
+        """Verify non-positive timeout metadata sets minimal positive timeout and 0 retries."""
+        choice_mock = MagicMock()
+        choice_mock.message.content = "Response"
+        choice_mock.finish_reason = "stop"
+        self.mock_client.chat.completions.create.return_value = MagicMock(
+            choices=[choice_mock], usage=None
+        )
+        self.mock_client.max_retries = 2
+        recorded_retries = []
+
+        def fake_create(**kwargs):
+            recorded_retries.append(self.mock_client.max_retries)
+            choice = MagicMock()
+            choice.message.content = "Ok"
+            choice.finish_reason = "stop"
+            return MagicMock(choices=[choice], usage=None)
+
+        self.mock_client.chat.completions.create.side_effect = fake_create
+
+        for non_positive_val in [0.0, -10.0]:
+            req = GenerationRequest(
+                messages=[Message(role="user", content="Hi")],
+                metadata={"timeout": non_positive_val},
+            )
+            self.provider.generate(req)
+            call_kwargs = self.mock_client.chat.completions.create.call_args.kwargs
+            self.assertEqual(call_kwargs.get("timeout"), 0.001)
+            self.assertEqual(recorded_retries[-1], 0)

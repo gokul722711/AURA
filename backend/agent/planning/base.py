@@ -106,6 +106,11 @@ class Planner(ABC):
     supports_replanning: bool = False
 
     @abstractmethod
-    def plan(self, objective: str, state: AgentState) -> Plan:
+    def plan(
+        self,
+        objective: str,
+        state: AgentState,
+        tracker: Any = None,
+    ) -> Plan:
         """Produce an actionable Plan for the given objective and state."""
         pass

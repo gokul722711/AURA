@@ -67,7 +67,9 @@ class ResearchPlanner(Planner):
         else:
             self.available_tools = {"rag_search"}
 
-    def _synthesize_model_knowledge_answer(self, objective: str) -> str:
+    def _synthesize_model_knowledge_answer(
+        self, objective: str, remaining_seconds: float | None = None
+    ) -> str:
         """Synthesize answer using only the model's pretrained/general knowledge."""
         messages = [
             Message(
@@ -80,20 +82,36 @@ class ResearchPlanner(Planner):
             ),
             Message(role="user", content=f"Research Objective:\n{objective}"),
         ]
+        metadata = {}
+        if remaining_seconds is not None:
+            metadata["timeout"] = remaining_seconds
         resp = self.gateway.generate(
             GenerationRequest(
                 messages=messages,
                 temperature=self.synthesis_temperature,
                 max_tokens=self.synthesis_max_tokens,
+                metadata=metadata,
             )
         )
         return resp.text.strip()
 
-    def plan(self, objective: str, state: AgentState) -> Plan:
+    def plan(
+        self,
+        objective: str,
+        state: AgentState,
+        tracker: Any = None,
+    ) -> Plan:
         """Produce the next research step or grounded final synthesis."""
+        remaining_budget: float | None = None
+        if tracker is not None and hasattr(tracker, "remaining_seconds"):
+            remaining_budget = tracker.remaining_seconds()
+
+
         # 1. Model Knowledge mode: direct synthesis without tool querying
         if self.mode == "model_knowledge" or not self.available_tools:
-            synthesis = self._synthesize_model_knowledge_answer(objective)
+            synthesis = self._synthesize_model_knowledge_answer(
+                objective, remaining_seconds=remaining_budget
+            )
             step = AgentStep(
                 step_id="step-model-knowledge-1",
                 action_type=ActionType.FINISH,
@@ -127,7 +145,9 @@ class ResearchPlanner(Planner):
         if self.max_queries is not None and len(past_queries) >= self.max_queries:
             decision_data = {"decision": "finish"}
         else:
-            decision_data = self._get_model_decision(objective, past_queries, evidence)
+            decision_data = self._get_model_decision(
+                objective, past_queries, evidence, remaining_seconds=remaining_budget
+            )
 
         decision = decision_data.get("decision", "").lower().strip()
 
@@ -171,7 +191,9 @@ class ResearchPlanner(Planner):
             )
 
         elif decision == "finish":
-            synthesis = self._synthesize_grounded_answer(objective, evidence, past_queries)
+            synthesis = self._synthesize_grounded_answer(
+                objective, evidence, past_queries, remaining_seconds=remaining_budget
+            )
             step_num = len(state.step_history) + 1
             evidence_dicts = [
                 ev.to_dict() if hasattr(ev, "to_dict") else ev for ev in evidence
@@ -249,6 +271,7 @@ class ResearchPlanner(Planner):
         objective: str,
         past_queries: list[str],
         evidence: list[Any],
+        remaining_seconds: float | None = None,
     ) -> dict[str, Any]:
         """Prompt LLM via ModelGateway.structured_output to decide next research step or finish."""
         tool_descriptions = []
@@ -354,11 +377,16 @@ class ResearchPlanner(Planner):
             Message(role="user", content=user_content),
         ]
 
+        metadata = {}
+        if remaining_seconds is not None:
+            metadata["timeout"] = remaining_seconds
+
         req = StructuredOutputRequest(
             messages=messages,
             schema=decision_schema,
             temperature=self.decision_temperature,
             max_tokens=self.decision_max_tokens,
+            metadata=metadata,
         )
 
         try:
@@ -381,6 +409,7 @@ class ResearchPlanner(Planner):
         objective: str,
         evidence: list[Any],
         past_queries: list[str],
+        remaining_seconds: float | None = None,
     ) -> str:
         """Synthesize final grounded response using retrieved evidence and citations."""
         if not evidence:
@@ -433,10 +462,15 @@ class ResearchPlanner(Planner):
             Message(role="user", content=user_content),
         ]
 
+        metadata = {}
+        if remaining_seconds is not None:
+            metadata["timeout"] = remaining_seconds
+
         req = GenerationRequest(
             messages=messages,
             temperature=self.synthesis_temperature,
             max_tokens=self.synthesis_max_tokens,
+            metadata=metadata,
         )
 
         resp = self.gateway.generate(req)
