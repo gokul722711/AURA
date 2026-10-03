@@ -211,6 +211,7 @@ def retrieve_chunks(
         distance=CosineDistance("embedding", query_embedding)
     )
 
+    resolved_uuids: set[str] = set()
     # Document ID filtering (M11 / KB loop fix)
     if config.document_ids is not None:
         clean_doc_ids = [str(did).strip() for did in config.document_ids if str(did).strip()]
@@ -231,8 +232,19 @@ def retrieve_chunks(
 
     results: list[RetrievalResult] = []
 
-    # Multi-document fairness cap (M11)
-    if config.max_chunks_per_document is not None:
+    # Multi-document fairness cap (M11):
+    # When document_ids restricts the search to exactly one resolved document:
+    #   - Do NOT apply max_chunks_per_document fairness.
+    #   - Allow normal top_k retrieval from that document.
+    # Multi-document fairness continues to apply when:
+    #   - retrieval is not restricted to one document (document_ids is None).
+    #   - document_ids resolves to multiple documents (len(resolved_uuids) > 1).
+    apply_fairness = (
+        config.max_chunks_per_document is not None
+        and not (config.document_ids is not None and len(resolved_uuids) == 1)
+    )
+
+    if apply_fairness:
         doc_chunk_counts: dict[str, int] = {}
         candidate_pool_limit = max(config.top_k * 5, 100)
         for chunk in queryset[:candidate_pool_limit]:

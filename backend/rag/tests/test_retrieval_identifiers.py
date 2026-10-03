@@ -201,3 +201,98 @@ class DocumentIdentifierResolutionTests(TestCase):
             config=config,
         )
         self.assertEqual(results, [])
+
+    def test_single_document_identifier_bypasses_max_chunks_per_document(self) -> None:
+        """When document_ids restricts to exactly one document, max_chunks_per_document is not applied."""
+        doc_large = ingest_document(
+            title="Large Topic Document",
+            content="Detailed section on agentic retrieval systems and pgvector vector search algorithms. " * 20,
+            embedding_provider=self.provider,
+            chunking_config=self.config,
+        )
+        # Search restricted to doc_large with top_k=5 and max_chunks_per_document=2
+        # Must return 5 chunks from doc_large rather than being capped at 2.
+        config_uuid = RetrievalConfig(
+            top_k=5,
+            document_ids=[str(doc_large.id)],
+            max_chunks_per_document=2,
+        )
+        results_uuid = retrieve_chunks(
+            query="agentic retrieval systems",
+            embedding_provider=self.provider,
+            config=config_uuid,
+        )
+        self.assertEqual(len(results_uuid), 5)
+        for r in results_uuid:
+            self.assertEqual(r.document_id, str(doc_large.id))
+
+        # Also works via title resolution
+        config_title = RetrievalConfig(
+            top_k=5,
+            document_ids=["Large Topic Document"],
+            max_chunks_per_document=2,
+        )
+        results_title = retrieve_chunks(
+            query="agentic retrieval systems",
+            embedding_provider=self.provider,
+            config=config_title,
+        )
+        self.assertEqual(len(results_title), 5)
+        for r in results_title:
+            self.assertEqual(r.document_id, str(doc_large.id))
+
+    def test_multi_document_retrieval_still_enforces_max_chunks_per_document(self) -> None:
+        """When multiple documents are resolved or search is unrestricted, max_chunks_per_document is enforced."""
+        doc_large = ingest_document(
+            title="Second Large Document",
+            content="Autonomous research agents perform structured planning and retrieval operations. " * 20,
+            embedding_provider=self.provider,
+            chunking_config=self.config,
+        )
+        # 1. Multiple resolved documents
+        config_multi = RetrievalConfig(
+            top_k=6,
+            document_ids=[str(self.doc_a.id), str(doc_large.id)],
+            max_chunks_per_document=2,
+        )
+        results_multi = retrieve_chunks(
+            query="autonomous research planning",
+            embedding_provider=self.provider,
+            config=config_multi,
+        )
+        doc_counts: dict[str, int] = {}
+        for r in results_multi:
+            doc_counts[r.document_id] = doc_counts.get(r.document_id, 0) + 1
+        for did, count in doc_counts.items():
+            self.assertLessEqual(count, 2)
+        self.assertGreater(len(doc_counts), 1)
+
+        # 2. Unrestricted search across all documents
+        config_unrestricted = RetrievalConfig(
+            top_k=6,
+            max_chunks_per_document=2,
+        )
+        results_unrestricted = retrieve_chunks(
+            query="autonomous research planning",
+            embedding_provider=self.provider,
+            config=config_unrestricted,
+        )
+        unrestricted_counts: dict[str, int] = {}
+        for r in results_unrestricted:
+            unrestricted_counts[r.document_id] = unrestricted_counts.get(r.document_id, 0) + 1
+        for did, count in unrestricted_counts.items():
+            self.assertLessEqual(count, 2)
+
+    def test_unknown_identifier_with_max_chunks_returns_zero(self) -> None:
+        """Unknown identifier with max_chunks_per_document configured fails closed with 0 chunks."""
+        config = RetrievalConfig(
+            top_k=5,
+            document_ids=["completely_nonexistent_document_identifier_99999"],
+            max_chunks_per_document=2,
+        )
+        results = retrieve_chunks(
+            query="autonomous research planning",
+            embedding_provider=self.provider,
+            config=config,
+        )
+        self.assertEqual(results, [])
