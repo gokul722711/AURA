@@ -8,10 +8,15 @@ from agent.state import AgentState, AgentStatus
 from rag.retrieval import RetrievalResult
 
 
-def make_citation(document_title: str, chunk_id: str) -> str:
-    """Generate canonical citation string for an evidence chunk."""
+def make_citation(document_title: str, chunk_id: str, page: int | None = None) -> str:
+    """Generate canonical citation string for an evidence chunk.
+
+    Includes page number if present (e.g. for PDF documents).
+    """
     title = document_title.strip() if document_title else "Untitled"
     cid = chunk_id.strip() if chunk_id else "N/A"
+    if page is not None:
+        return f"[{title}, Page: {page}, Chunk: {cid}]"
     return f"[{title}, Chunk: {cid}]"
 
 
@@ -19,7 +24,7 @@ def _is_chunk_cited(citation: str, chunk_id: str, text: str) -> bool:
     """Check if an evidence chunk is explicitly cited in target text.
 
     Accepts:
-    1. Exact canonical citation: e.g. '[Title, Chunk: <chunk_id>]'
+    1. Exact canonical citation: e.g. '[Title, Chunk: <chunk_id>]' or '[Title, Page: X, Chunk: <chunk_id>]'
     2. Boundary-delimited chunk reference: e.g. 'Chunk: <chunk_id>' or 'Chunk <chunk_id>'
     Does NOT match on arbitrary substrings or bare document titles.
     """
@@ -41,7 +46,7 @@ def _is_chunk_cited(citation: str, chunk_id: str, text: str) -> bool:
 
 
 def _copy_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Deep copy sources list, dictionaries, and inner chunk_ids lists."""
+    """Deep copy sources list, dictionaries, inner chunk_ids, and pages lists."""
     copied: list[dict[str, Any]] = []
     for s in sources:
         if isinstance(s, dict):
@@ -49,6 +54,9 @@ def _copy_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
             cids = s.get("chunk_ids")
             if isinstance(cids, list):
                 s_dict["chunk_ids"] = list(cids)
+            pages = s.get("pages")
+            if isinstance(pages, list):
+                s_dict["pages"] = list(pages)
             copied.append(s_dict)
         else:
             copied.append(s)
@@ -79,17 +87,28 @@ class ResearchEvidence:
     citation: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def page(self) -> int | None:
+        """Page number if available in metadata (e.g. for PDF documents)."""
+        if isinstance(self.metadata, dict):
+            p = self.metadata.get("page")
+            if isinstance(p, int):
+                return p
+            if isinstance(p, str) and p.isdigit():
+                return int(p)
+        return None
+
     def __post_init__(self) -> None:
         if not self.citation:
             object.__setattr__(
                 self,
                 "citation",
-                make_citation(self.document_title, self.chunk_id),
+                make_citation(self.document_title, self.chunk_id, page=self.page),
             )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert evidence to a JSON-serializable dictionary."""
-        return {
+        data: dict[str, Any] = {
             "chunk_id": self.chunk_id,
             "document_id": self.document_id,
             "document_title": self.document_title,
@@ -99,6 +118,9 @@ class ResearchEvidence:
             "citation": self.citation,
             "metadata": dict(self.metadata),
         }
+        if self.page is not None:
+            data["page"] = self.page
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ResearchEvidence":
@@ -116,6 +138,9 @@ class ResearchEvidence:
         doc_id = data.get("document_id")
         citation = str(data.get("citation") or "")
         meta = data.get("metadata")
+        clean_meta = dict(meta) if isinstance(meta, dict) else {}
+        if "page" in data and "page" not in clean_meta and data["page"] is not None:
+            clean_meta["page"] = data["page"]
         return cls(
             chunk_id=chunk_id,
             document_title=doc_title,
@@ -124,12 +149,13 @@ class ResearchEvidence:
             score=score,
             document_id=str(doc_id) if doc_id else None,
             citation=citation,
-            metadata=dict(meta) if isinstance(meta, dict) else {},
+            metadata=clean_meta,
         )
 
     @classmethod
     def from_retrieval_result(cls, r: RetrievalResult) -> "ResearchEvidence":
-        """Instantiate ResearchEvidence from an M2/M3 RetrievalResult."""
+        """Instantiate ResearchEvidence from an M2/M3/M11 RetrievalResult."""
+        meta = dict(r.chunk_metadata) if r.chunk_metadata else {}
         return cls(
             chunk_id=str(r.chunk_id),
             document_id=str(r.document_id) if r.document_id else None,
@@ -137,7 +163,7 @@ class ResearchEvidence:
             document_source=str(r.document_source or "unknown"),
             content=r.content,
             score=float(r.score) if r.score is not None else None,
-            metadata=dict(r.chunk_metadata) if r.chunk_metadata else {},
+            metadata=meta,
         )
 
 
@@ -146,6 +172,7 @@ def _aggregate_sources(evidence: list[ResearchEvidence]) -> list[dict[str, Any]]
 
     Includes document_id in grouping identity so distinct documents with
     identical title and source metadata remain separate entries.
+    Preserves page coverage where available.
     """
     sources_map: dict[tuple[str | None, str, str], dict[str, Any]] = {}
     for ev in evidence:
@@ -157,9 +184,13 @@ def _aggregate_sources(evidence: list[ResearchEvidence]) -> list[dict[str, Any]]
                 "document_id": ev.document_id,
                 "chunk_count": 0,
                 "chunk_ids": [],
+                "pages": [],
             }
         sources_map[key]["chunk_count"] += 1
         sources_map[key]["chunk_ids"].append(ev.chunk_id)
+        if ev.page is not None and ev.page not in sources_map[key]["pages"]:
+            sources_map[key]["pages"].append(ev.page)
+            sources_map[key]["pages"].sort()
     return list(sources_map.values())
 
 
@@ -191,6 +222,11 @@ class ResearchResult:
     duration_ms: float = 0.0
     errors: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def duration_seconds(self) -> float:
+        """Total execution duration in seconds."""
+        return round(self.duration_ms / 1000.0, 2)
 
     @property
     def citations(self) -> list[str]:
@@ -240,6 +276,7 @@ class ResearchResult:
             "citations": self.citations,
             "is_grounded": self.is_grounded,
             "status": status_val,
+            "duration_seconds": self.duration_seconds,
             "duration_ms": self.duration_ms,
             "errors": list(self.errors),
             "metadata": dict(self.metadata),
@@ -287,10 +324,16 @@ class ResearchResult:
         else:
             iteration_count = 0
 
+        raw_sec = data.get("duration_seconds")
         raw_dur = data.get("duration_ms")
         if raw_dur is not None:
             try:
                 duration_ms = float(raw_dur)
+            except (ValueError, TypeError):
+                duration_ms = 0.0
+        elif raw_sec is not None:
+            try:
+                duration_ms = float(raw_sec) * 1000.0
             except (ValueError, TypeError):
                 duration_ms = 0.0
         else:
@@ -376,13 +419,29 @@ class ResearchResult:
 
         sources = _aggregate_sources(evidence)
         step_history = getattr(state, "step_history", [])
-        duration_ms = sum(getattr(s, "duration_ms", 0.0) for s in step_history)
+        raw_state_meta = getattr(state, "metadata", {})
+        metadata = dict(raw_state_meta) if isinstance(raw_state_meta, dict) else {}
+
+        # Extract total runtime duration from state metadata if available, otherwise step sum
+        raw_dur_ms = metadata.get("duration_ms")
+        raw_dur_sec = metadata.get("duration_seconds")
+        if raw_dur_ms is not None:
+            try:
+                duration_ms = float(raw_dur_ms)
+            except (ValueError, TypeError):
+                duration_ms = sum(getattr(s, "duration_ms", 0.0) for s in step_history)
+        elif raw_dur_sec is not None:
+            try:
+                duration_ms = float(raw_dur_sec) * 1000.0
+            except (ValueError, TypeError):
+                duration_ms = sum(getattr(s, "duration_ms", 0.0) for s in step_history)
+        else:
+            duration_ms = sum(getattr(s, "duration_ms", 0.0) for s in step_history)
+
         status = getattr(state, "status", AgentStatus.COMPLETED)
         final_answer = getattr(state, "final_output", "") or ""
         raw_state_errors = getattr(state, "errors", [])
         errors = [str(e) for e in raw_state_errors if e is not None] if isinstance(raw_state_errors, list) else []
-        raw_state_meta = getattr(state, "metadata", {})
-        metadata = dict(raw_state_meta) if isinstance(raw_state_meta, dict) else {}
 
         return cls(
             objective=getattr(state, "objective", ""),
@@ -402,5 +461,11 @@ class ResearchResult:
     def from_run_result(cls, run_result: Any) -> "ResearchResult":
         """Construct a structured ResearchResult from an AgentRunResult."""
         state = getattr(run_result, "state", run_result)
-        return cls.from_state(state)
+        trace = getattr(run_result, "trace", None)
+        res = cls.from_state(state)
+        if res.duration_ms <= 0.0 and trace is not None and hasattr(trace, "total_duration_seconds"):
+            dur_sec = trace.total_duration_seconds()
+            if dur_sec > 0.0:
+                res.duration_ms = round(dur_sec * 1000.0, 2)
+        return res
 

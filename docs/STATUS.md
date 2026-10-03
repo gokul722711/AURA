@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-**M10 — Research Modes + Web Research: COMPLETE**
+**M11 — Knowledge Ingestion + Advanced Retrieval: COMPLETE**
 
 ---
 
@@ -374,6 +374,92 @@ Verified:
 * `git diff --check` passes with zero issues
 * Zero secrets committed
 
+### M11 — Knowledge Ingestion + Advanced Retrieval
+
+Upgrade AURA's Knowledge Base from basic text ingestion into a practical document-grounded knowledge system supporting TXT, Markdown, PDF, and DOCX while preserving source-location metadata (specifically PDF pages and DOCX block types) throughout retrieval, evidence, and grounded citation synthesis.
+
+Implemented:
+
+* **Dependencies**: Added `PyMuPDF` (PDF extraction) and `python-docx` (DOCX extraction) to `backend/requirements.txt`.
+* **Document Extraction Layer** (`backend/rag/extraction/`):
+  * `DocumentExtractor` abstract interface (`extract(content: bytes, filename: str) -> ExtractedDocument`).
+  * `ExtractedBlock` and `ExtractedDocument` data contracts holding normalized text, sequence index, and metadata.
+  * `TextExtractor` (.txt) decoding UTF-8, UTF-8-sig, Latin-1.
+  * `MarkdownExtractor` (.md) extracting Markdown content.
+  * `PDFExtractor` (.pdf via PyMuPDF) isolating PDF parsing, extracting page-by-page, attaching 1-based page metadata (`{"source_type": "pdf", "page": N}`), and rejecting scanned/empty PDFs without extractable text with clear `ExtractionError`.
+  * `DocxExtractor` (.docx via python-docx) traversing body elements in natural document order, extracting headings, paragraphs, lists, and tables with `block_type` metadata.
+  * Extractor registry (`get_extractor`) mapping extensions and rejecting unsupported formats with `UnsupportedFormatError`.
+* **Document Normalization** (`backend/rag/extraction/normalization.py`):
+  * Text and block normalization stripping null bytes, form feeds, excessive carriage returns, and collapsing 3+ newlines without modifying semantic text content.
+* **Unified Chunking Extension** (`backend/rag/chunking.py`):
+  * Reused existing deterministic AURA chunker; extended `ChunkResult` with `metadata: dict[str, Any]`.
+  * `chunk_extracted_document()` chunking blocks while computing exact start/end character offsets in assembled text and attaching block metadata (e.g. page, block_type) to every chunk.
+* **Document Ingestion API & Model Enhancements** (`backend/rag/models.py`, `backend/rag/ingestion.py`, `backend/rag/views.py`):
+  * `POST /api/documents/` upgraded to support `multipart/form-data` file uploads (.txt, .md, .pdf, .docx), with file size limits (<=20MB), empty file checks, and format validation.
+  * 100% backward compatibility maintained for existing JSON pasted-text ingestion.
+  * `Document` model extended with `@property` accessors for `source_type`, `filename`, and `file_size` with no DB schema changes needed.
+  * Ingestion functions (`ingest_file`, `ingest_extracted_document`) managing extraction, normalization, chunking, embedding, and atomic chunk persistence. Ingestion failures set document status to `error`.
+* **Retrieval & Context Improvements** (`backend/rag/retrieval.py`, `backend/rag/context.py`, `backend/rag/pipeline.py`):
+  * `RetrievalConfig` extended with `document_ids: list[str] | None` and `max_chunks_per_document: int | None`.
+  * `retrieve_chunks()` filtering by `document_ids` and applying per-document candidate limits for multi-document fairness while strictly maintaining deterministic `(distance ASC, pk ASC)` ordering.
+  * `assemble_context()` formatting page headers (`[Source: {title} | Page: {page} | Chunk ...]`) and preventing single-document context domination.
+  * `RAGPipeline.query()` and `RAGSearchTool` support optional `document_ids` filtering.
+* **Evidence and Citation Preservation** (`backend/agent/results.py`, `backend/agent/planning/research.py`, `backend/agent/tools/builtin/rag.py`):
+  * `make_citation()` produces canonical citations with page numbers when present: `[Title, Page: X, Chunk: ID]` (or `[Title, Chunk: ID]` for plain text).
+  * `_is_chunk_cited()` recognizes page-inclusive canonical citations and chunk boundary references without breaking M6 citation integrity guarantees.
+  * `ResearchEvidence` adds `@property def page` and includes `page` in `to_dict()`.
+  * `_aggregate_sources()` tracks unique sorted `pages` per document source.
+  * `ResearchPlanner` prompts and syntheses include page numbers and pass `document_ids` when specified.
+* **Frontend Knowledge Base UI** (`frontend/src/app/page.jsx`, `frontend/src/app/globals.css`):
+  * Add Document form mode toggle (`📁 Upload File` vs `✍️ Paste Text`).
+  * File upload input with format validation, preview info, and progress feedback.
+  * Document cards display type badges (`PDF`, `DOCX`, `Markdown`, `TXT`), formatted file sizes, and page counts.
+  * Evidence cards display `Page: {page}` badge tags.
+  * Result sources grid displays `Pages: {pages}` list.
+* **Automated Tests**:
+  * 48 backend tests in `rag/tests/test_extraction.py`, `rag/tests/test_ingestion_m11.py`, `rag/tests/test_retrieval_m11.py`, `rag/tests/test_evidence_citation_m11.py`, `rag/tests/test_document_api_m11.py`, and `agent/tests/test_e2e_research_m11.py`.
+  * 5 frontend unit tests in `frontend/tests/knowledge-ingestion.test.mjs`.
+
+Verified:
+
+* 531/531 backend tests pass (100% offline, deterministic)
+* System check (`python manage.py check`) passes with zero issues
+* Model migrations check (`makemigrations --check`) passes with zero changes
+* Frontend Next.js production build passes with zero TypeScript
+* 21/21 frontend unit tests pass (`npm test`)
+* `git diff --check` passes with zero issues
+* Zero secrets committed
+
+### Post-M11 Cleanup — Research Duration + React Controlled Inputs
+
+**Status: COMPLETE**
+
+Fixed duration calculation discrepancies and React input reconciliation warnings identified during manual validation:
+
+* **Canonical Duration Calculation**:
+  * Root cause: `ResearchResult.from_state()` previously summed only discrete tool execution step durations (`duration_ms` of tool calls), omitting the multi-second LLM inference time in the planner loop. In failed runs, `duration_ms` was omitted entirely; in cancelled runs, duration was not captured.
+  * Measured end-to-end elapsed wall-clock time monotonically in `AgentRuntime.run()` and `agent.tasks.execute_research_run`.
+  * Exposed canonical `duration_seconds` property across `ResearchResult` dataclass, `ResearchRun` model, and API serializers (`to_summary_dict`, `to_detail_dict`), backed by `duration_ms` with zero DB schema changes.
+  * Updated Celery execution logger to output in canonical seconds (`in %.2fs`).
+  * Updated frontend results bar and history badges to render canonical seconds consistently.
+* **React Controlled/Uncontrolled Reconciliation Fix**:
+  * Root cause: Mode toggling between "Upload File" (`type="file"`, uncontrolled) and "Paste Text" (`type="text"`, controlled) reused unkeyed DOM `<input>` nodes at the same child position, triggering React's "changing an uncontrolled input to be controlled" / "changing a controlled input to be uncontrolled" warnings.
+  * Assigned distinct `key` attributes to both form group containers and input elements (`key="input-doc-file"`, `key="input-file-title"`, `key="input-paste-title"`, etc.).
+  * Enforced explicit default string fallbacks (`?? ""`) on all input fields.
+* **Automated Tests**:
+  * 6 backend regression tests in `backend/agent/tests/test_duration_cleanup.py`.
+  * 1 frontend test in `frontend/tests/async-research.test.mjs`.
+
+Verified:
+
+* 537/537 backend tests pass (`python manage.py test`)
+* 22/22 frontend tests pass (`npm test`)
+* Frontend Next.js production build passes (`npm run build`)
+* `python manage.py check` passes with 0 issues
+* `python manage.py makemigrations --check` detects no changes
+* `git diff --check` passes with 0 issues
+
+
 ---
 
 ## Development Roadmap
@@ -390,8 +476,9 @@ M7  Research API + Minimal Frontend     COMPLETE
 M8  Knowledge Base & Document Ingestion COMPLETE
 M9  Async Research & Run History        COMPLETE
 M10 Research Modes + Web Research       COMPLETE
-M11 Local/Open Model Expansion
-M12 Deployment
+M11 Knowledge Ingestion + Adv Retrieval COMPLETE
+M12 Local/Open Model Expansion
+M13 Deployment
 ```
 
 Milestones are incremental. Each milestone should produce a working, tested increment.

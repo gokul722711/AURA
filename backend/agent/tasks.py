@@ -1,6 +1,7 @@
 """Celery tasks for autonomous research execution (M9)."""
 
 import logging
+import time
 from typing import Any
 
 from celery import shared_task
@@ -36,6 +37,7 @@ def execute_research_run(self, run_id: str) -> dict[str, Any]:
         return {"status": "cancelled", "run_id": str(run.id)}
 
     # 2. Transition queued -> running (atomic guard against concurrent cancellation)
+    task_start_time = time.monotonic()
     rows_updated = ResearchRun.objects.filter(
         id=run.id, status=ResearchRun.STATUS_QUEUED
     ).update(status=ResearchRun.STATUS_RUNNING, started_at=timezone.now())
@@ -52,10 +54,19 @@ def execute_research_run(self, run_id: str) -> dict[str, Any]:
         runtime = create_research_runtime(mode=run.mode)
         research_result = runtime.run_research(run.objective)
 
+        completed_time = timezone.now()
+        task_duration_ms = max(0.0, (time.monotonic() - task_start_time) * 1000.0)
+
         # Check if cancelled during execution
         run.refresh_from_db(fields=["status"])
         if run.status == ResearchRun.STATUS_CANCELLED:
             logger.info("ResearchRun %s was cancelled during execution.", run_id)
+            ResearchRun.objects.filter(
+                id=run.id, status=ResearchRun.STATUS_CANCELLED, completed_at__isnull=True
+            ).update(
+                duration_ms=round(task_duration_ms, 2),
+                completed_at=completed_time,
+            )
             return {"status": "cancelled", "run_id": str(run.id)}
 
         result_dict = sanitize_data(research_result.to_dict())
@@ -74,8 +85,12 @@ def execute_research_run(self, run_id: str) -> dict[str, Any]:
             run_status = ResearchRun.STATUS_COMPLETED
             error_msg = ""
 
-        completed_time = timezone.now()
-        duration_ms = result_dict.get("duration_ms") or 0.0
+        # Use research_result's execution duration if available, otherwise task elapsed time
+        res_duration_ms = result_dict.get("duration_ms")
+        if res_duration_ms and float(res_duration_ms) > 0.0:
+            duration_ms = float(res_duration_ms)
+        else:
+            duration_ms = round(task_duration_ms, 2)
 
         # Atomic update: only complete if still running in DB (prevents overwriting concurrent cancellation)
         rows = ResearchRun.objects.filter(
@@ -92,34 +107,53 @@ def execute_research_run(self, run_id: str) -> dict[str, Any]:
             run.refresh_from_db(fields=["status"])
             if run.status == ResearchRun.STATUS_CANCELLED:
                 logger.info("ResearchRun %s was cancelled during execution.", run_id)
+                ResearchRun.objects.filter(
+                    id=run.id, status=ResearchRun.STATUS_CANCELLED, completed_at__isnull=True
+                ).update(
+                    duration_ms=duration_ms,
+                    completed_at=completed_time,
+                )
                 return {"status": "cancelled", "run_id": str(run.id)}
 
         run.refresh_from_db()
         logger.info(
-            "ResearchRun %s finished with status=%s in %.2fms",
+            "ResearchRun %s finished with status=%s in %.2fs",
             run_id,
             run.status,
-            run.duration_ms,
+            run.duration_seconds if run.duration_seconds is not None else (run.duration_ms or 0.0) / 1000.0,
         )
         return {"status": run.status, "run_id": str(run.id)}
 
     except Exception as exc:
+        completed_time = timezone.now()
+        task_duration_ms = max(0.0, (time.monotonic() - task_start_time) * 1000.0)
         logger.error("ResearchRun %s execution failed: %s", run_id, exc)
         try:
             run.refresh_from_db(fields=["status"])
             if run.status == ResearchRun.STATUS_CANCELLED:
                 logger.info("ResearchRun %s was cancelled during execution.", run_id)
+                ResearchRun.objects.filter(
+                    id=run.id, status=ResearchRun.STATUS_CANCELLED, completed_at__isnull=True
+                ).update(
+                    duration_ms=round(task_duration_ms, 2),
+                    completed_at=completed_time,
+                )
                 return {"status": "cancelled", "run_id": str(run.id)}
         except Exception:
             pass
         safe_error = sanitize_text(str(exc))
-        completed_time = timezone.now()
         ResearchRun.objects.filter(
             id=run.id, status=ResearchRun.STATUS_RUNNING
         ).update(
             status=ResearchRun.STATUS_FAILED,
             error_message=safe_error,
+            duration_ms=round(task_duration_ms, 2),
             completed_at=completed_time,
         )
         run.refresh_from_db()
+        logger.info(
+            "ResearchRun %s finished with status=failed in %.2fs",
+            run_id,
+            run.duration_seconds if run.duration_seconds is not None else (run.duration_ms or 0.0) / 1000.0,
+        )
         return {"status": "failed", "run_id": str(run.id), "error": safe_error}

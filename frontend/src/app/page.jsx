@@ -71,12 +71,31 @@ export default function Home() {
 
   // Add Document State
   const [showAddForm, setShowAddForm] = useState(false);
+  const [ingestMode, setIngestMode] = useState("file"); // 'file' | 'paste'
+  const [selectedFile, setSelectedFile] = useState(null);
   const [newTitle, setNewTitle] = useState("");
   const [newContent, setNewContent] = useState("");
   const [newSource, setNewSource] = useState("");
   const [ingesting, setIngesting] = useState(false);
   const [addError, setAddError] = useState(null);
   const [ingestSuccess, setIngestSuccess] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const formatFileSize = (bytes) => {
+    if (bytes == null || isNaN(bytes)) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const getDocTypeBadge = (sourceType, filename) => {
+    const t = (sourceType || "").toLowerCase();
+    const ext = (filename || "").split(".").pop().toLowerCase();
+    if (t === "pdf" || ext === "pdf") return { label: "PDF", icon: "📄", className: "badge-pdf" };
+    if (t === "docx" || ext === "docx") return { label: "DOCX", icon: "📝", className: "badge-docx" };
+    if (t === "markdown" || ext === "md" || ext === "markdown") return { label: "Markdown", icon: "📋", className: "badge-md" };
+    return { label: "TXT", icon: "📑", className: "badge-txt" };
+  };
 
   // Document Interaction State
   const [expandedDocId, setExpandedDocId] = useState(null);
@@ -282,58 +301,124 @@ export default function Home() {
     }
   };
 
+  // File Selection Handler
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+      setAddError(null);
+      if (!newTitle.trim()) {
+        const baseName = (file.name || "").replace(/\.[^/.]+$/, "");
+        setNewTitle(baseName || "");
+      }
+      if (!newSource.trim()) {
+        setNewSource(file.name || "");
+      }
+    }
+  };
+
   // Ingest New Document
   const handleAddDocument = async (e) => {
     e.preventDefault();
-    const titleTrimmed = newTitle.trim();
-    const contentTrimmed = newContent.trim();
-
-    if (!titleTrimmed) {
-      setAddError("Document title cannot be empty.");
-      return;
-    }
-    if (!contentTrimmed) {
-      setAddError("Document content cannot be empty.");
-      return;
-    }
-
-    setIngesting(true);
     setAddError(null);
     setIngestSuccess(null);
 
-    try {
-      const response = await fetch(getApiUrl("documents"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          title: titleTrimmed,
-          content: contentTrimmed,
-          source: newSource.trim() || undefined,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || data.detail || `HTTP ${response.status}`);
+    if (ingestMode === "file") {
+      if (!selectedFile) {
+        setAddError("Please select a document file (.txt, .md, .pdf, or .docx).");
+        return;
+      }
+      const ext = selectedFile.name.split(".").pop().toLowerCase();
+      if (!["txt", "md", "pdf", "docx"].includes(ext)) {
+        setAddError("Unsupported file format. Supported formats are: .txt, .md, .pdf, .docx.");
+        return;
       }
 
-      setIngestSuccess({
-        id: data.id,
-        title: data.title,
-        chunkCount: data.chunk_count,
-      });
+      setIngesting(true);
+      try {
+        const formData = new FormData();
+        formData.append("file", selectedFile);
+        if (newTitle.trim()) formData.append("title", newTitle.trim());
+        if (newSource.trim()) formData.append("source", newSource.trim());
 
-      setNewTitle("");
-      setNewContent("");
-      setNewSource("");
-      setShowAddForm(false);
-      await fetchDocuments();
-    } catch (err) {
-      setAddError(err.message || "Document ingestion failed.");
-    } finally {
-      setIngesting(false);
+        const response = await fetch(getApiUrl("documents"), {
+          method: "POST",
+          body: formData,
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || data.detail || `HTTP ${response.status}`);
+        }
+
+        setIngestSuccess({
+          id: data.id,
+          title: data.title,
+          chunkCount: data.chunk_count,
+          sourceType: data.source_type,
+        });
+
+        setSelectedFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        setNewTitle("");
+        setNewContent("");
+        setNewSource("");
+        setShowAddForm(false);
+        await fetchDocuments();
+      } catch (err) {
+        setAddError(err.message || "File ingestion failed.");
+      } finally {
+        setIngesting(false);
+      }
+    } else {
+      const titleTrimmed = newTitle.trim();
+      const contentTrimmed = newContent.trim();
+
+      if (!titleTrimmed) {
+        setAddError("Document title cannot be empty.");
+        return;
+      }
+      if (!contentTrimmed) {
+        setAddError("Document content cannot be empty.");
+        return;
+      }
+
+      setIngesting(true);
+      try {
+        const response = await fetch(getApiUrl("documents"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            title: titleTrimmed,
+            content: contentTrimmed,
+            source: newSource.trim() || undefined,
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || data.detail || `HTTP ${response.status}`);
+        }
+
+        setIngestSuccess({
+          id: data.id,
+          title: data.title,
+          chunkCount: data.chunk_count,
+          sourceType: data.source_type,
+        });
+
+        setNewTitle("");
+        setNewContent("");
+        setNewSource("");
+        setShowAddForm(false);
+        await fetchDocuments();
+      } catch (err) {
+        setAddError(err.message || "Document ingestion failed.");
+      } finally {
+        setIngesting(false);
+      }
     }
   };
 
@@ -481,7 +566,7 @@ export default function Home() {
                     <select
                       id="mode-select"
                       className="mode-select-dropdown"
-                      value={researchMode}
+                      value={researchMode ?? "knowledge_base"}
                       onChange={(e) => setResearchMode(e.target.value)}
                       disabled={loading}
                     >
@@ -504,7 +589,7 @@ export default function Home() {
                   id="objective-input"
                   className="textarea"
                   placeholder="Enter a research objective (e.g. How do the AURA Model Gateway, RAG pipeline, and Agent Runtime work together?)..."
-                  value={objective}
+                  value={objective ?? ""}
                   onChange={(e) => setObjective(e.target.value)}
                   disabled={loading}
                   rows={4}
@@ -641,9 +726,11 @@ export default function Home() {
                   <span className="badge badge-info">
                     Iterations: {result.iteration_count}
                   </span>
-                  {typeof result.duration_ms === "number" && (
+                  {(typeof result.duration_seconds === "number" || typeof result.duration_ms === "number") && (
                     <span className="badge badge-info">
-                      Duration: {(result.duration_ms / 1000).toFixed(2)}s
+                      Duration: {typeof result.duration_seconds === "number"
+                        ? `${result.duration_seconds.toFixed(2)}s`
+                        : `${(result.duration_ms / 1000).toFixed(2)}s`}
                     </span>
                   )}
                   <span className="badge badge-info">
@@ -712,6 +799,11 @@ export default function Home() {
                             <span className="label-hint">
                               {src.chunk_count || src.chunk_ids?.length || 0} chunk(s)
                             </span>
+                            {src.pages && src.pages.length > 0 && (
+                              <span className="source-pages-tag">
+                                Pages: {src.pages.join(", ")}
+                              </span>
+                            )}
                             <div className="chunk-pills">
                               {(src.chunk_ids || []).map((cid, cidx) => (
                                 <span key={cidx} className="chunk-pill">
@@ -756,8 +848,13 @@ export default function Home() {
                           </div>
                           <div className="evidence-content">{ev.content}</div>
                           <div className="evidence-footer">
-                            Origin: {ev.document_source || "unknown"}
-                            {ev.document_id ? ` (ID: ${ev.document_id})` : ""}
+                            <span>Origin: {ev.document_source || "unknown"}</span>
+                            {(ev.page != null || ev.metadata?.page != null) && (
+                              <span className="evidence-page-tag">
+                                Page: {ev.page != null ? ev.page : ev.metadata.page}
+                              </span>
+                            )}
+                            {ev.document_id ? <span className="evidence-id-tag">ID: {ev.document_id}</span> : ""}
                           </div>
                         </article>
                       ))}
@@ -825,63 +922,160 @@ export default function Home() {
               <section className="card kb-form-card" aria-label="Add Document">
                 <div className="kb-form-header">
                   <h3 className="kb-form-title">Ingest Knowledge Document</h3>
+                  {ingestMode === "paste" && (
+                    <button
+                      type="button"
+                      className="btn-secondary-sm"
+                      onClick={loadSampleMarkdown}
+                      disabled={ingesting}
+                    >
+                      📄 Load Sample Markdown
+                    </button>
+                  )}
+                </div>
+
+                {/* Mode Selector: Upload File vs Paste Text */}
+                <div className="kb-mode-toggle" role="tablist">
                   <button
                     type="button"
-                    className="btn-secondary-sm"
-                    onClick={loadSampleMarkdown}
+                    role="tab"
+                    aria-selected={ingestMode === "file"}
+                    className={`kb-mode-tab ${ingestMode === "file" ? "active" : ""}`}
+                    onClick={() => {
+                      setIngestMode("file");
+                      setAddError(null);
+                    }}
                     disabled={ingesting}
                   >
-                    📄 Load Sample Markdown
+                    📁 Upload File (.txt, .md, .pdf, .docx)
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={ingestMode === "paste"}
+                    className={`kb-mode-tab ${ingestMode === "paste" ? "active" : ""}`}
+                    onClick={() => {
+                      setIngestMode("paste");
+                      setAddError(null);
+                    }}
+                    disabled={ingesting}
+                  >
+                    ✍️ Paste Text / Markdown
                   </button>
                 </div>
 
                 <form onSubmit={handleAddDocument} className="form-group">
-                  <div>
-                    <label htmlFor="doc-title-input" className="label-text">
-                      Title <span className="required-star">*</span>
-                    </label>
-                    <input
-                      id="doc-title-input"
-                      type="text"
-                      className="text-input"
-                      placeholder="e.g. AURA Architecture Specifications"
-                      value={newTitle}
-                      onChange={(e) => setNewTitle(e.target.value)}
-                      disabled={ingesting}
-                      required
-                    />
-                  </div>
+                  {ingestMode === "file" ? (
+                    <>
+                      <div key="field-file-upload">
+                        <label htmlFor="doc-file-input" className="label-text">
+                          Document File <span className="required-star">*</span>
+                          <span className="label-hint"> (TXT, Markdown, PDF, DOCX up to 20MB)</span>
+                        </label>
+                        <input
+                          key="input-doc-file"
+                          id="doc-file-input"
+                          ref={fileInputRef}
+                          type="file"
+                          accept=".txt,.md,.pdf,.docx"
+                          className="file-input"
+                          onChange={handleFileChange}
+                          disabled={ingesting}
+                          required
+                        />
+                        {selectedFile && (
+                          <div className="selected-file-info">
+                            <span className="selected-file-name">📄 {selectedFile.name}</span>
+                            <span className="selected-file-size">({formatFileSize(selectedFile.size)})</span>
+                          </div>
+                        )}
+                      </div>
 
-                  <div>
-                    <label htmlFor="doc-source-input" className="label-text">
-                      Source Identifier <span className="label-hint">(optional file path, URL, or tag)</span>
-                    </label>
-                    <input
-                      id="doc-source-input"
-                      type="text"
-                      className="text-input"
-                      placeholder="e.g. docs/architecture.md"
-                      value={newSource}
-                      onChange={(e) => setNewSource(e.target.value)}
-                      disabled={ingesting}
-                    />
-                  </div>
+                      <div key="field-file-title">
+                        <label htmlFor="doc-title-input" className="label-text">
+                          Document Title <span className="label-hint">(optional, defaults to filename)</span>
+                        </label>
+                        <input
+                          key="input-file-title"
+                          id="doc-title-input"
+                          type="text"
+                          className="text-input"
+                          placeholder="e.g. Quantum Processor Architecture"
+                          value={newTitle ?? ""}
+                          onChange={(e) => setNewTitle(e.target.value)}
+                          disabled={ingesting}
+                        />
+                      </div>
 
-                  <div>
-                    <label htmlFor="doc-content-input" className="label-text">
-                      Content (Plain Text or Markdown) <span className="required-star">*</span>
-                    </label>
-                    <textarea
-                      id="doc-content-input"
-                      className="textarea"
-                      placeholder="Paste or write Markdown/text content here..."
-                      value={newContent}
-                      onChange={(e) => setNewContent(e.target.value)}
-                      disabled={ingesting}
-                      rows={8}
-                      required
-                    />
-                  </div>
+                      <div key="field-file-source">
+                        <label htmlFor="doc-source-input" className="label-text">
+                          Source Identifier <span className="label-hint">(optional origin or path)</span>
+                        </label>
+                        <input
+                          key="input-file-source"
+                          id="doc-source-input"
+                          type="text"
+                          className="text-input"
+                          placeholder="e.g. specs/quantum.pdf"
+                          value={newSource ?? ""}
+                          onChange={(e) => setNewSource(e.target.value)}
+                          disabled={ingesting}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div key="field-paste-title">
+                        <label htmlFor="doc-paste-title-input" className="label-text">
+                          Title <span className="required-star">*</span>
+                        </label>
+                        <input
+                          key="input-paste-title"
+                          id="doc-paste-title-input"
+                          type="text"
+                          className="text-input"
+                          placeholder="e.g. AURA Architecture Specifications"
+                          value={newTitle ?? ""}
+                          onChange={(e) => setNewTitle(e.target.value)}
+                          disabled={ingesting}
+                          required
+                        />
+                      </div>
+
+                      <div key="field-paste-source">
+                        <label htmlFor="doc-paste-source-input" className="label-text">
+                          Source Identifier <span className="label-hint">(optional file path, URL, or tag)</span>
+                        </label>
+                        <input
+                          key="input-paste-source"
+                          id="doc-paste-source-input"
+                          type="text"
+                          className="text-input"
+                          placeholder="e.g. docs/architecture.md"
+                          value={newSource ?? ""}
+                          onChange={(e) => setNewSource(e.target.value)}
+                          disabled={ingesting}
+                        />
+                      </div>
+
+                      <div key="field-paste-content">
+                        <label htmlFor="doc-content-input" className="label-text">
+                          Content (Plain Text or Markdown) <span className="required-star">*</span>
+                        </label>
+                        <textarea
+                          key="textarea-paste-content"
+                          id="doc-content-input"
+                          className="textarea"
+                          placeholder="Paste or write Markdown/text content here..."
+                          value={newContent ?? ""}
+                          onChange={(e) => setNewContent(e.target.value)}
+                          disabled={ingesting}
+                          rows={8}
+                          required
+                        />
+                      </div>
+                    </>
+                  )}
 
                   {addError && (
                     <div className="error-banner" role="alert">
@@ -894,7 +1088,11 @@ export default function Home() {
                     <button
                       type="button"
                       className="btn-cancel"
-                      onClick={() => setShowAddForm(false)}
+                      onClick={() => {
+                        setShowAddForm(false);
+                        setSelectedFile(null);
+                        setAddError(null);
+                      }}
                       disabled={ingesting}
                     >
                       Cancel
@@ -903,7 +1101,11 @@ export default function Home() {
                       type="submit"
                       id="btn-submit-document"
                       className="btn-ingest"
-                      disabled={ingesting || !newTitle.trim() || !newContent.trim()}
+                      disabled={
+                        ingesting ||
+                        (ingestMode === "file" && !selectedFile) ||
+                        (ingestMode === "paste" && (!newTitle.trim() || !newContent.trim()))
+                      }
                     >
                       {ingesting ? (
                         <>
@@ -912,7 +1114,7 @@ export default function Home() {
                         </>
                       ) : (
                         <>
-                          <span>Ingest Document</span>
+                          <span>{ingestMode === "file" ? "Upload & Ingest File" : "Ingest Document"}</span>
                           <span aria-hidden="true">→</span>
                         </>
                       )}
@@ -960,6 +1162,7 @@ export default function Home() {
                   const isExpanded = expandedDocId === doc.id;
                   const isDeleting = deletingId === doc.id;
                   const isConfirming = deleteConfirmId === doc.id;
+                  const typeBadge = getDocTypeBadge(doc.source_type, doc.filename || doc.source);
 
                   return (
                     <article
@@ -982,9 +1185,17 @@ export default function Home() {
                             >
                               ● {doc.status === "ready" ? "Ready" : doc.status}
                             </span>
+                            <span className={`doc-type-badge ${typeBadge.className}`}>
+                              {typeBadge.icon} {typeBadge.label}
+                            </span>
                             <span className="chunk-count-badge">
                               {doc.chunk_count} chunk{doc.chunk_count === 1 ? "" : "s"}
                             </span>
+                            {doc.file_size != null && (
+                              <span className="doc-size-tag">
+                                {formatFileSize(doc.file_size)}
+                              </span>
+                            )}
                             {doc.source && (
                               <span className="doc-source-tag">
                                 📁 {doc.source}
@@ -1055,6 +1266,22 @@ export default function Home() {
                               <span className="preview-label">Document ID:</span>
                               <code className="preview-code">{doc.id}</code>
                             </div>
+                            <div>
+                              <span className="preview-label">Format:</span>
+                              <span className="preview-val">{typeBadge.label}</span>
+                            </div>
+                            {doc.filename && (
+                              <div>
+                                <span className="preview-label">Filename:</span>
+                                <span className="preview-val">{doc.filename}</span>
+                              </div>
+                            )}
+                            {doc.metadata?.page_count && (
+                              <div>
+                                <span className="preview-label">Pages:</span>
+                                <span className="preview-val">{doc.metadata.page_count}</span>
+                              </div>
+                            )}
                             <div>
                               <span className="preview-label">Chunks Stored:</span>
                               <span className="preview-val">{doc.chunk_count} in pgvector</span>
@@ -1158,9 +1385,12 @@ export default function Home() {
                           {run.is_grounded && (
                             <span className="grounded-pill">✓ Grounded</span>
                           )}
-                          {typeof run.duration_ms === "number" && run.duration_ms > 0 && (
+                          {((typeof run.duration_seconds === "number" && run.duration_seconds > 0) ||
+                            (typeof run.duration_ms === "number" && run.duration_ms > 0)) && (
                             <span className="duration-pill">
-                              ⏱ {(run.duration_ms / 1000).toFixed(1)}s
+                              ⏱ {typeof run.duration_seconds === "number" && run.duration_seconds > 0
+                                ? `${run.duration_seconds.toFixed(1)}s`
+                                : `${(run.duration_ms / 1000).toFixed(1)}s`}
                             </span>
                           )}
                           {run.citation_count > 0 && (

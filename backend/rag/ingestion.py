@@ -1,19 +1,26 @@
 """Document ingestion for AURA RAG.
 
 Handles the full ingestion pipeline:
-document creation → chunking → embedding → storage.
+document extraction → normalization → chunking → embedding → storage.
+Supports TXT, Markdown, PDF, and DOCX formats while preserving source metadata.
 """
 
 import logging
+import os
 from typing import Any
 
 from django.conf import settings
 from django.db import transaction
 
-from rag.chunking import ChunkingConfig, chunk_text
+from rag.chunking import ChunkingConfig, chunk_extracted_document, chunk_text
 from rag.embeddings.base import EmbeddingProvider
 from rag.embeddings.registry import create_embedding_provider
 from rag.exceptions import DocumentError, EmbeddingError
+from rag.extraction import (
+    ExtractedDocument,
+    get_extractor,
+    normalize_document,
+)
 from rag.models import Document, DocumentChunk
 
 logger = logging.getLogger(__name__)
@@ -48,7 +55,7 @@ def ingest_document(
 
     Creates a Document record, chunks the content, generates embeddings
     via the provided EmbeddingProvider (or default provider if None),
-    and stores DocumentChunk records with their embedding vectors.
+    and stores DocumentChunk records with their embedding vectors and metadata.
 
     Args:
         title: Document title.
@@ -75,17 +82,19 @@ def ingest_document(
     if chunking_config is None:
         chunking_config = _get_chunking_config()
 
+    doc_metadata = dict(metadata or {})
+
     document = Document.objects.create(
         title=title.strip(),
         content=content,
-        source=source,
-        metadata=metadata or {},
+        source=source.strip() if source else "",
+        metadata=doc_metadata,
         status=Document.STATUS_PROCESSING,
     )
 
     try:
-        # Chunk the document
-        chunks = chunk_text(content, config=chunking_config)
+        chunk_meta = {"source_type": doc_metadata.get("source_type", "text")}
+        chunks = chunk_text(content, config=chunking_config, metadata=chunk_meta)
         if not chunks:
             document.status = Document.STATUS_READY
             document.save(update_fields=["status", "updated_at"])
@@ -110,7 +119,7 @@ def ingest_document(
                 f"chunk count ({len(chunks)})."
             )
 
-        # Create chunk records with embeddings atomically
+        # Create chunk records with embeddings and chunk metadata atomically
         chunk_records = [
             DocumentChunk(
                 document=document,
@@ -119,6 +128,7 @@ def ingest_document(
                 start_offset=chunk.start_offset,
                 end_offset=chunk.end_offset,
                 embedding=embedding,
+                metadata=chunk.metadata or {},
             )
             for chunk, embedding in zip(chunks, embeddings)
         ]
@@ -140,3 +150,181 @@ def ingest_document(
         raise
 
     return document
+
+
+def ingest_extracted_document(
+    title: str,
+    extracted_doc: ExtractedDocument,
+    embedding_provider: EmbeddingProvider | None = None,
+    source: str = "",
+    metadata: dict[str, Any] | None = None,
+    chunking_config: ChunkingConfig | None = None,
+) -> Document:
+    """Ingest a normalized ExtractedDocument into the RAG system.
+
+    Preserves source-location metadata (e.g. PDF page numbers, DOCX block types)
+    on DocumentChunk records.
+
+    Args:
+        title: Document title.
+        extracted_doc: Normalized ExtractedDocument instance.
+        embedding_provider: Provider to generate embeddings.
+        source: Optional source origin.
+        metadata: Optional additional metadata.
+        chunking_config: Optional chunking configuration.
+
+    Returns:
+        The created Document instance with status 'ready' or 'error'.
+
+    Raises:
+        DocumentError: If validation fails.
+    """
+    if not title or not title.strip():
+        raise DocumentError("Document title must be a non-empty string.")
+
+    if embedding_provider is None:
+        embedding_provider = get_default_embedding_provider()
+
+    if chunking_config is None:
+        chunking_config = _get_chunking_config()
+
+    doc_metadata = dict(extracted_doc.metadata)
+    doc_metadata["source_type"] = extracted_doc.source_type
+    if metadata:
+        doc_metadata.update(metadata)
+
+    # Chunk the extracted document while preserving block-level metadata
+    assembled_text, chunks = chunk_extracted_document(extracted_doc, config=chunking_config)
+
+    if not assembled_text or not assembled_text.strip():
+        raise DocumentError("Document content must be a non-empty string.")
+
+    document = Document.objects.create(
+        title=title.strip(),
+        content=assembled_text,
+        source=source.strip() if source else "",
+        metadata=doc_metadata,
+        status=Document.STATUS_PROCESSING,
+    )
+
+    try:
+        if not chunks:
+            document.status = Document.STATUS_READY
+            document.save(update_fields=["status", "updated_at"])
+            logger.info(
+                "Extracted document '%s' ingested with 0 chunks.",
+                document.title,
+            )
+            return document
+
+        # Generate embeddings for all chunk texts
+        chunk_texts = [chunk.content for chunk in chunks]
+        try:
+            embeddings = embedding_provider.embed_texts(chunk_texts)
+        except Exception as exc:
+            raise EmbeddingError(
+                f"Failed to generate embeddings for document '{title}': {exc}"
+            ) from exc
+
+        if len(embeddings) != len(chunks):
+            raise EmbeddingError(
+                f"Embedding count ({len(embeddings)}) does not match "
+                f"chunk count ({len(chunks)})."
+            )
+
+        # Create chunk records with embeddings and chunk metadata atomically
+        chunk_records = [
+            DocumentChunk(
+                document=document,
+                content=chunk.content,
+                chunk_index=chunk.chunk_index,
+                start_offset=chunk.start_offset,
+                end_offset=chunk.end_offset,
+                embedding=embedding,
+                metadata=chunk.metadata or {},
+            )
+            for chunk, embedding in zip(chunks, embeddings)
+        ]
+        with transaction.atomic():
+            DocumentChunk.objects.bulk_create(chunk_records)
+            document.status = Document.STATUS_READY
+            document.save(update_fields=["status", "updated_at"])
+
+        logger.info(
+            "Extracted document '%s' ingested successfully: %d chunks created.",
+            document.title,
+            len(chunk_records),
+        )
+
+    except Exception:
+        document.status = Document.STATUS_ERROR
+        document.error_message = "Ingestion failed. See logs for details."
+        document.save(update_fields=["status", "error_message", "updated_at"])
+        raise
+
+    return document
+
+
+def ingest_file(
+    file_bytes: bytes,
+    filename: str,
+    title: str | None = None,
+    source: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
+    chunking_config: ChunkingConfig | None = None,
+) -> Document:
+    """Ingest a file (TXT, Markdown, PDF, or DOCX) into the RAG system.
+
+    Full pipeline:
+    raw file bytes → extractor → normalizer → chunker → embedding → pgvector.
+
+    Args:
+        file_bytes: Raw file bytes.
+        filename: Original filename (including extension).
+        title: Optional custom title; defaults to filename without extension.
+        source: Optional source origin; defaults to filename.
+        metadata: Optional additional metadata dictionary.
+        embedding_provider: Optional EmbeddingProvider.
+        chunking_config: Optional ChunkingConfig.
+
+    Returns:
+        The created Document instance with status 'ready'.
+
+    Raises:
+        DocumentError: If format is unsupported or file content is empty/corrupt.
+    """
+    if not file_bytes:
+        raise DocumentError("Uploaded file is empty.")
+
+    extractor = get_extractor(filename)
+    extracted = extractor.extract(file_bytes, filename=filename)
+    normalized = normalize_document(extracted)
+
+    clean_title = (
+        title.strip()
+        if (title and isinstance(title, str) and title.strip())
+        else os.path.splitext(filename)[0]
+    )
+    clean_source = (
+        source.strip()
+        if (source and isinstance(source, str) and source.strip())
+        else filename
+    )
+
+    file_metadata: dict[str, Any] = {
+        "filename": filename,
+        "file_size": len(file_bytes),
+        "source_type": normalized.source_type,
+    }
+    if metadata and isinstance(metadata, dict):
+        file_metadata.update(metadata)
+
+    return ingest_extracted_document(
+        title=clean_title,
+        extracted_doc=normalized,
+        embedding_provider=embedding_provider,
+        source=clean_source,
+        metadata=file_metadata,
+        chunking_config=chunking_config,
+    )

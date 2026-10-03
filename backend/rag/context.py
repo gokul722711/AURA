@@ -26,16 +26,20 @@ class ContextConfig:
     Attributes:
         max_chars: Maximum total characters of chunk content to include.
             None means no limit. Loaded from AI_RAG["CONTEXT_MAX_CHARS"].
+        max_chunks_per_document: Optional maximum number of chunks to include
+            from any single document in the assembled context.
     """
 
     max_chars: int | None = None
+    max_chunks_per_document: int | None = None
 
 
 def _get_context_config() -> ContextConfig:
     """Build ContextConfig from Django settings."""
     rag_settings = getattr(settings, "AI_RAG", {})
     max_chars = rag_settings.get("CONTEXT_MAX_CHARS")
-    return ContextConfig(max_chars=max_chars)
+    max_chunks = rag_settings.get("MAX_CHUNKS_PER_DOC")
+    return ContextConfig(max_chars=max_chars, max_chunks_per_document=max_chunks)
 
 
 def _is_redundant(
@@ -72,12 +76,13 @@ def assemble_context(
     Produces a prompt-ready string containing source references, chunk text,
     and clear boundaries between context sections.
 
-    M3 behavior:
+    M3/M11 behavior:
     - Preserves retrieval ranking (highest-ranked first).
     - Applies context budget: stops adding chunks when max_chars is exhausted.
+    - Prevents single-document domination via optional max_chunks_per_document.
     - Skips redundant chunks whose content span is fully contained within
       an already-included chunk from the same document.
-    - Maintains source/chunk attribution in the output.
+    - Maintains source/page/chunk attribution in the output.
 
     Args:
         retrieval_results: List of RetrievalResult from retrieval.
@@ -101,9 +106,15 @@ def assemble_context(
 
     sections = []
     accepted: list[RetrievalResult] = []
+    doc_chunk_counts: dict[str, int] = {}
     chars_used = 0
 
     for result in retrieval_results:
+        # Enforce max chunks per document if configured
+        if config.max_chunks_per_document is not None:
+            if doc_chunk_counts.get(result.document_id, 0) >= config.max_chunks_per_document:
+                continue
+
         # Skip redundant chunks
         if _is_redundant(result, accepted):
             continue
@@ -121,14 +132,21 @@ def assemble_context(
                 break
 
         source_label = result.document_source or result.document_title
+        page_val = (
+            result.chunk_metadata.get("page")
+            if isinstance(result.chunk_metadata, dict)
+            else None
+        )
+        page_str = f" | Page: {page_val}" if page_val is not None else ""
         section = (
-            f"[Source: {source_label} | "
+            f"[Source: {source_label}{page_str} | "
             f"Chunk {result.chunk_index + 1} | "
             f"Similarity: {result.score:.4f}]\n"
             f"{content}"
         )
         sections.append(section)
         accepted.append(result)
+        doc_chunk_counts[result.document_id] = doc_chunk_counts.get(result.document_id, 0) + 1
         chars_used += content_len
 
     if not sections:

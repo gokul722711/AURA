@@ -121,3 +121,41 @@ test("Research History list parser preserves summary metadata without full evide
   assert.equal(parsed[1].runId, "run-2");
   assert.equal(parsed[1].status, "running");
 });
+
+test("Duration formatting helper renders canonical seconds accurately", () => {
+  const formatDuration = (runOrResult) => {
+    if (!runOrResult) return null;
+    if (typeof runOrResult.duration_seconds === "number") {
+      return `${runOrResult.duration_seconds.toFixed(2)}s`;
+    }
+    if (typeof runOrResult.duration_ms === "number") {
+      return `${(runOrResult.duration_ms / 1000).toFixed(2)}s`;
+    }
+    return null;
+  };
+
+  const formatHistoryDuration = (run) => {
+    if (!run) return null;
+    if (typeof run.duration_seconds === "number" && run.duration_seconds > 0) {
+      return `⏱ ${run.duration_seconds.toFixed(1)}s`;
+    }
+    if (typeof run.duration_ms === "number" && run.duration_ms > 0) {
+      return `⏱ ${(run.duration_ms / 1000).toFixed(1)}s`;
+    }
+    return null;
+  };
+
+  // 1. Result summary duration in canonical seconds
+  assert.equal(formatDuration({ duration_seconds: 34.79 }), "34.79s");
+  assert.equal(formatDuration({ duration_ms: 34790.0 }), "34.79s");
+  assert.equal(formatDuration({ duration_seconds: 61.44 }), "61.44s");
+  assert.equal(formatDuration({ duration_seconds: null }), null);
+  assert.equal(formatDuration(null), null);
+
+  // 2. History duration pill in canonical seconds
+  assert.equal(formatHistoryDuration({ duration_seconds: 34.79 }), "⏱ 34.8s");
+  assert.equal(formatHistoryDuration({ duration_ms: 34790.0 }), "⏱ 34.8s");
+  assert.equal(formatHistoryDuration({ duration_seconds: 61.44 }), "⏱ 61.4s");
+  assert.equal(formatHistoryDuration({ duration_seconds: 0 }), null);
+  assert.equal(formatHistoryDuration({ duration_seconds: null }), null);
+});

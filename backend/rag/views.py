@@ -5,7 +5,9 @@ import uuid
 from typing import Any
 
 from django.db import models
+import os
 from rest_framework import status
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,10 +15,17 @@ from rest_framework.views import APIView
 from agent.security import sanitize_data, sanitize_text
 from rag.embeddings.base import EmbeddingProvider
 from rag.exceptions import DocumentError
-from rag.ingestion import get_default_embedding_provider, ingest_document
+from rag.ingestion import (
+    get_default_embedding_provider,
+    ingest_document,
+    ingest_file,
+)
 from rag.models import Document
 
 logger = logging.getLogger(__name__)
+
+MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB limit
+SUPPORTED_FILE_EXTENSIONS = (".txt", ".md", ".pdf", ".docx")
 
 
 def _serialize_document(doc: Document, include_content: bool = True) -> dict[str, Any]:
@@ -28,11 +37,15 @@ def _serialize_document(doc: Document, include_content: bool = True) -> dict[str
     if chunk_count is None:
         chunk_count = doc.chunks.count()
 
+    doc_meta = doc.metadata if isinstance(doc.metadata, dict) else {}
     data: dict[str, Any] = {
         "id": str(doc.id),
         "title": doc.title,
         "source": doc.source,
-        "metadata": doc.metadata,
+        "source_type": doc.source_type,
+        "filename": doc.filename,
+        "file_size": doc.file_size,
+        "metadata": doc_meta,
         "status": doc.status,
         "chunk_count": chunk_count,
         "error_message": doc.error_message,
@@ -49,11 +62,12 @@ class DocumentListCreateView(APIView):
 
     Endpoints:
         GET  /api/documents/   -> List documents with metadata and chunk counts
-        POST /api/documents/   -> Ingest document (title, content, optional source/metadata)
+        POST /api/documents/   -> Ingest document (multipart file upload OR JSON body)
     """
 
     authentication_classes = []
     permission_classes = []
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_embedding_provider(self) -> EmbeddingProvider:
         """Return the active EmbeddingProvider for ingestion."""
@@ -69,7 +83,88 @@ class DocumentListCreateView(APIView):
         return Response(serialized, status=status.HTTP_200_OK)
 
     def post(self, request: Request) -> Response:
-        """Ingest a new text/Markdown document synchronously through the M2 pipeline."""
+        """Ingest a new document into the RAG system.
+
+        Supports:
+        1. Multipart file upload: file (.txt, .md, .pdf, .docx), optional title, optional source
+        2. JSON body: title, content, optional source, optional metadata
+        """
+        # --- Option 1: Multipart file upload ---
+        if "file" in request.FILES:
+            file_obj = request.FILES["file"]
+
+            if file_obj.size > MAX_UPLOAD_SIZE_BYTES:
+                return Response(
+                    {"error": f"File size ({file_obj.size} bytes) exceeds maximum limit of 20MB."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if file_obj.size == 0:
+                return Response(
+                    {"error": "Uploaded file is empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            filename = file_obj.name or "uploaded_file"
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in SUPPORTED_FILE_EXTENSIONS:
+                supported_str = ", ".join(SUPPORTED_FILE_EXTENSIONS)
+                return Response(
+                    {
+                        "error": f"Unsupported file format '{ext or 'unknown'}'. Supported formats are: {supported_str}."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            content_bytes = file_obj.read()
+            if not content_bytes:
+                return Response(
+                    {"error": "Uploaded file is empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            title = request.data.get("title")
+            if title is not None and not isinstance(title, str):
+                return Response(
+                    {"error": "Field 'title' must be a string."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            source = request.data.get("source")
+            if source is not None and not isinstance(source, str):
+                return Response(
+                    {"error": "Field 'source' must be a string."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            try:
+                embedding_provider = self.get_embedding_provider()
+                document = ingest_file(
+                    file_bytes=content_bytes,
+                    filename=filename,
+                    title=title,
+                    source=source,
+                    embedding_provider=embedding_provider,
+                )
+            except DocumentError as exc:
+                return Response(
+                    {"error": sanitize_text(str(exc))},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            except Exception as exc:
+                logger.warning("Document file ingestion failed: %s", sanitize_text(str(exc)))
+                return Response(
+                    {
+                        "error": "Document ingestion failed.",
+                        "detail": sanitize_text(str(exc)),
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            result_dict = _serialize_document(document, include_content=True)
+            return Response(result_dict, status=status.HTTP_201_CREATED)
+
+        # --- Option 2: Existing JSON pasted-text ingestion ---
         data = request.data
         if not isinstance(data, dict):
             return Response(

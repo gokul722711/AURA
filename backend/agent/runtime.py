@@ -1,6 +1,7 @@
 """AgentRuntime orchestrating state, planning, step execution, and boundaries."""
 
 import inspect
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -152,6 +153,7 @@ class AgentRuntime:
            - check cancellation
         6. Complete with AgentRunResult.
         """
+        start_time = time.monotonic()
         state = AgentState.create(objective=objective, metadata=metadata)
         trace = ExecutionTrace(run_id=state.run_id)
         tracker = LimitTracker(self.limits)
@@ -254,5 +256,9 @@ class AgentRuntime:
             state.transition_to(AgentStatus.FAILED)
             state.add_error(str(exc))
             trace.emit(agent_run_failed(state.run_id, str(exc), state.iteration))
+
+        elapsed_sec = max(0.0, time.monotonic() - start_time)
+        state.metadata["duration_seconds"] = round(elapsed_sec, 3)
+        state.metadata["duration_ms"] = round(elapsed_sec * 1000.0, 2)
 
         return AgentRunResult(state=state, trace=trace)

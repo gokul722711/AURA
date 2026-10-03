@@ -23,6 +23,11 @@ RESEARCH_DECISION_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "Specific search query to execute if decision is continue.",
         },
+        "document_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional list of document IDs to restrict search to.",
+        },
     },
     "required": ["decision"],
 }
@@ -167,6 +172,10 @@ class ResearchPlanner(Planner):
             else:
                 selected_tool = next(iter(self.available_tools))
 
+            tool_input: dict[str, Any] = {"query": query}
+            if "document_ids" in decision_data and decision_data["document_ids"]:
+                tool_input["document_ids"] = decision_data["document_ids"]
+
             step_num = len(state.step_history) + 1
             step = AgentStep(
                 step_id=f"step-research-{step_num}",
@@ -174,7 +183,7 @@ class ResearchPlanner(Planner):
                 description=f"Search {selected_tool} for: {query}",
                 payload={
                     "tool_name": selected_tool,
-                    "tool_input": {"query": query},
+                    "tool_input": tool_input,
                 },
                 metadata={"query": query, "step_num": step_num, "tool": selected_tool},
             )
@@ -358,8 +367,18 @@ class ResearchPlanner(Planner):
                     content = getattr(ev, "content", None) or (
                         ev.get("content") if isinstance(ev, dict) else ""
                     )
+                    page = (
+                        getattr(ev, "page", None)
+                        or (ev.get("page") if isinstance(ev, dict) else None)
+                        or (
+                            ev.get("metadata", {}).get("page")
+                            if isinstance(ev, dict) and isinstance(ev.get("metadata"), dict)
+                            else None
+                        )
+                    )
+                    page_str = f" (Page: {page})" if page is not None else ""
                     evidence_items.append(
-                        f"[{idx}] Source: {title} (Chunk: {cid})\n{content.strip()}"
+                        f"[{idx}] Source: {title}{page_str} (Chunk: {cid})\n{content.strip()}"
                     )
                 evidence_str = "\n\n".join(evidence_items)
             else:
@@ -433,8 +452,18 @@ class ResearchPlanner(Planner):
             content = getattr(ev, "content", None) or (
                 ev.get("content") if isinstance(ev, dict) else ""
             )
+            page = (
+                getattr(ev, "page", None)
+                or (ev.get("page") if isinstance(ev, dict) else None)
+                or (
+                    ev.get("metadata", {}).get("page")
+                    if isinstance(ev, dict) and isinstance(ev.get("metadata"), dict)
+                    else None
+                )
+            )
+            page_str = f" | Page: {page}" if page is not None else ""
             evidence_items.append(
-                f"[{idx}] Source: {title} | Document: {source} | Chunk: {cid}\n{content.strip()}"
+                f"[{idx}] Source: {title} | Document: {source}{page_str} | Chunk: {cid}\n{content.strip()}"
             )
         evidence_block = "\n\n".join(evidence_items)
 

@@ -106,6 +106,7 @@ class RAGPipeline:
         self,
         question: str,
         config: RAGConfig | None = None,
+        document_ids: list[str] | None = None,
     ) -> RAGResponse:
         """Execute a full RAG query.
 
@@ -118,6 +119,7 @@ class RAGPipeline:
         Args:
             question: The user's question.
             config: RAG pipeline configuration. Uses defaults if None.
+            document_ids: Optional list of document UUIDs to restrict retrieval to.
 
         Returns:
             RAGResponse with the generated answer, retrieval sources,
@@ -126,6 +128,15 @@ class RAGPipeline:
         if config is None:
             config = RAGConfig()
 
+        retrieval_cfg = config.retrieval_config
+        if document_ids is not None:
+            retrieval_cfg = RetrievalConfig(
+                top_k=retrieval_cfg.top_k,
+                similarity_threshold=retrieval_cfg.similarity_threshold,
+                document_ids=document_ids,
+                max_chunks_per_document=retrieval_cfg.max_chunks_per_document,
+            )
+
         # Step 1: Process query (deterministic, local normalization)
         processed = process_query(question)
 
@@ -133,7 +144,7 @@ class RAGPipeline:
         retrieval_results = retrieve_chunks(
             query=processed.normalized,
             embedding_provider=self._embedding_provider,
-            config=config.retrieval_config,
+            config=retrieval_cfg,
         )
 
         has_context = len(retrieval_results) > 0

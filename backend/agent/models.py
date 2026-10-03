@@ -81,6 +81,20 @@ class ResearchRun(models.Model):
     def __str__(self) -> str:
         return f"ResearchRun({self.id}, mode={self.mode}, status={self.status})"
 
+    @property
+    def duration_seconds(self) -> float | None:
+        """Total execution duration in seconds (derived from duration_ms)."""
+        if self.duration_ms is None:
+            return None
+        return round(self.duration_ms / 1000.0, 2)
+
+    @duration_seconds.setter
+    def duration_seconds(self, value: float | None) -> None:
+        if value is None:
+            self.duration_ms = None
+        else:
+            self.duration_ms = round(float(value) * 1000.0, 2)
+
     def to_summary_dict(self) -> dict[str, Any]:
         """Return lightweight metadata for research history listing."""
         is_grounded = False
@@ -101,6 +115,7 @@ class ResearchRun(models.Model):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "duration_seconds": self.duration_seconds,
             "duration_ms": self.duration_ms,
             "is_grounded": is_grounded,
             "has_evidence": has_evidence,
@@ -118,6 +133,7 @@ class ResearchRun(models.Model):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "duration_seconds": self.duration_seconds,
             "duration_ms": self.duration_ms,
         }
 

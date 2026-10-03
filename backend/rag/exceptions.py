@@ -13,6 +13,18 @@ class DocumentError(RAGError):
     pass
 
 
+class ExtractionError(DocumentError):
+    """Raised when document extraction fails or format contains no extractable text."""
+
+    pass
+
+
+class UnsupportedFormatError(DocumentError):
+    """Raised when an uploaded document has an unsupported file format or extension."""
+
+    pass
+
+
 class ChunkingError(RAGError):
     """Raised when text chunking fails."""
 

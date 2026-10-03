@@ -58,6 +58,27 @@ class Document(models.Model):
     class Meta:
         ordering = ["-created_at"]
 
+    @property
+    def source_type(self) -> str:
+        """Return the document format identifier (e.g. 'txt', 'markdown', 'pdf', 'docx')."""
+        if isinstance(self.metadata, dict):
+            return self.metadata.get("source_type", "text")
+        return "text"
+
+    @property
+    def filename(self) -> str:
+        """Return the original uploaded filename if available."""
+        if isinstance(self.metadata, dict):
+            return self.metadata.get("filename", "")
+        return ""
+
+    @property
+    def file_size(self) -> int | None:
+        """Return the file size in bytes if available."""
+        if isinstance(self.metadata, dict):
+            return self.metadata.get("file_size")
+        return None
+
     def __str__(self) -> str:
         return f"Document({self.title}, status={self.status})"
 

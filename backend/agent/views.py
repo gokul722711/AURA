@@ -199,12 +199,20 @@ class ResearchCancelView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        now = timezone.now()
+        duration_ms = None
+        if run.started_at:
+            duration_ms = max(0.0, round((now - run.started_at).total_seconds() * 1000.0, 2))
+        elif run.created_at:
+            duration_ms = max(0.0, round((now - run.created_at).total_seconds() * 1000.0, 2))
+
         ResearchRun.objects.filter(
             id=run.id,
             status__in=[ResearchRun.STATUS_QUEUED, ResearchRun.STATUS_RUNNING],
         ).update(
             status=ResearchRun.STATUS_CANCELLED,
-            completed_at=timezone.now(),
+            completed_at=now,
+            duration_ms=duration_ms,
             error_message="Cancelled by user.",
         )
         run.refresh_from_db()

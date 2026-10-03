@@ -41,14 +41,21 @@ class RetrievalConfig:
         top_k: Maximum number of chunks to return.
         similarity_threshold: Minimum similarity score (1 - cosine_distance).
             Chunks below this threshold are excluded. Default 0.0 (no filtering).
+        document_ids: Optional list of document UUIDs to restrict retrieval to.
+        max_chunks_per_document: Optional maximum number of chunks to retrieve from
+            any single document (prevents a single document from dominating context).
     """
 
     top_k: int = 5
     similarity_threshold: float = 0.0
+    document_ids: list[str] | None = None
+    max_chunks_per_document: int | None = None
 
     def __post_init__(self) -> None:
         if self.top_k <= 0:
             raise RetrievalError("top_k must be greater than 0.")
+        if self.max_chunks_per_document is not None and self.max_chunks_per_document <= 0:
+            raise RetrievalError("max_chunks_per_document must be greater than 0.")
 
 
 @dataclass(frozen=True)
@@ -90,6 +97,7 @@ def _get_retrieval_config() -> RetrievalConfig:
     return RetrievalConfig(
         top_k=rag_settings.get("TOP_K", 5),
         similarity_threshold=rag_settings.get("SIMILARITY_THRESHOLD", 0.0),
+        max_chunks_per_document=rag_settings.get("MAX_CHUNKS_PER_DOC"),
     )
 
 
@@ -104,10 +112,12 @@ def retrieve_chunks(
     using pgvector. Results are ordered by similarity (highest first) with
     deterministic tie-breaking by chunk primary key.
 
-    M3 correctness:
-      Similarity threshold filtering is applied database-side BEFORE
-      the top-K slice. This means the full set of qualifying candidates
-      is considered, and then the top K are selected from that set.
+    M3/M11 enhancements:
+      - Similarity threshold filtering applied database-side before top-K slice.
+      - Document ID filtering (document_ids) restricts search to target documents.
+      - Multi-document fairness (max_chunks_per_document) prevents one document
+        from dominating context.
+      - Deterministic tie-breaking uses (distance ASC, chunk pk ASC) ordering.
 
     Args:
         query: The search query text.
@@ -138,6 +148,11 @@ def retrieve_chunks(
         distance=CosineDistance("embedding", query_embedding)
     )
 
+    # Document ID filtering (M11)
+    if config.document_ids is not None:
+        clean_doc_ids = [str(did).strip() for did in config.document_ids if str(did).strip()]
+        queryset = queryset.filter(document_id__in=clean_doc_ids)
+
     # M3: Apply threshold filtering BEFORE top-K slice.
     # similarity = 1 - distance, so threshold T means distance <= 1 - T.
     if config.similarity_threshold > 0.0:
@@ -145,27 +160,56 @@ def retrieve_chunks(
         queryset = queryset.filter(distance__lte=max_distance)
 
     # Deterministic ordering: by distance ASC (best first), then pk ASC for tie-breaking
-    queryset = queryset.order_by("distance", "pk")[: config.top_k]
+    queryset = queryset.order_by("distance", "pk")
 
-    results = []
-    for rank, chunk in enumerate(queryset, start=1):
-        # Convert cosine distance to similarity: similarity = 1 - distance
-        similarity = 1.0 - chunk.distance
-        results.append(
-            RetrievalResult(
-                chunk_id=str(chunk.pk),
-                document_id=str(chunk.document_id),
-                content=chunk.content,
-                score=similarity,
-                rank=rank,
-                chunk_index=chunk.chunk_index,
-                document_title=chunk.document.title,
-                document_source=chunk.document.source,
-                start_offset=chunk.start_offset,
-                end_offset=chunk.end_offset,
-                chunk_metadata=chunk.metadata or {},
-                chunk=chunk,
+    results: list[RetrievalResult] = []
+
+    # Multi-document fairness cap (M11)
+    if config.max_chunks_per_document is not None:
+        doc_chunk_counts: dict[str, int] = {}
+        candidate_pool_limit = max(config.top_k * 5, 100)
+        for chunk in queryset[:candidate_pool_limit]:
+            doc_id_str = str(chunk.document_id)
+            if doc_chunk_counts.get(doc_id_str, 0) >= config.max_chunks_per_document:
+                continue
+            doc_chunk_counts[doc_id_str] = doc_chunk_counts.get(doc_id_str, 0) + 1
+            similarity = 1.0 - chunk.distance
+            results.append(
+                RetrievalResult(
+                    chunk_id=str(chunk.pk),
+                    document_id=doc_id_str,
+                    content=chunk.content,
+                    score=similarity,
+                    rank=len(results) + 1,
+                    chunk_index=chunk.chunk_index,
+                    document_title=chunk.document.title,
+                    document_source=chunk.document.source,
+                    start_offset=chunk.start_offset,
+                    end_offset=chunk.end_offset,
+                    chunk_metadata=chunk.metadata or {},
+                    chunk=chunk,
+                )
             )
-        )
+            if len(results) >= config.top_k:
+                break
+    else:
+        for rank, chunk in enumerate(queryset[: config.top_k], start=1):
+            similarity = 1.0 - chunk.distance
+            results.append(
+                RetrievalResult(
+                    chunk_id=str(chunk.pk),
+                    document_id=str(chunk.document_id),
+                    content=chunk.content,
+                    score=similarity,
+                    rank=rank,
+                    chunk_index=chunk.chunk_index,
+                    document_title=chunk.document.title,
+                    document_source=chunk.document.source,
+                    start_offset=chunk.start_offset,
+                    end_offset=chunk.end_offset,
+                    chunk_metadata=chunk.metadata or {},
+                    chunk=chunk,
+                )
+            )
 
     return results
