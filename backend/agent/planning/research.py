@@ -326,7 +326,6 @@ class ResearchPlanner(Planner):
                 f'   decision="finish"\n\n'
                 f"Rules:\n"
                 f"- Formulate focused, specific search queries.\n"
-                f"- Formulate new search queries; do not repeat queries that have already been executed.\n"
                 f"- Choose the most appropriate tool based on the objective and evidence.\n"
                 f"- When decision is 'continue', query must be a non-empty string."
             )
@@ -345,7 +344,6 @@ class ResearchPlanner(Planner):
                 f'   decision="finish"\n\n'
                 f"Rules:\n"
                 f"- Formulate focused, specific search queries.\n"
-                f"- Formulate new search queries; do not repeat queries that have already been executed.\n"
                 f"- When decision is 'continue', query must be a non-empty string."
             )
 
@@ -378,29 +376,9 @@ class ResearchPlanner(Planner):
                             else None
                         )
                     )
-                    url = (
-                        getattr(ev, "url", None)
-                        or (ev.get("url") if isinstance(ev, dict) else None)
-                        or (
-                            ev.get("metadata", {}).get("url")
-                            if isinstance(ev, dict) and isinstance(ev.get("metadata"), dict)
-                            else None
-                        )
-                        or (
-                            ev.get("metadata", {}).get("canonical_url")
-                            if isinstance(ev, dict) and isinstance(ev.get("metadata"), dict)
-                            else None
-                        )
-                    )
-                    if not url and isinstance(ev, dict):
-                        ds = ev.get("document_source", "")
-                        if ds and str(ds).startswith(("http://", "https://")):
-                            url = str(ds)
-
                     page_str = f" (Page: {page})" if page is not None else ""
-                    url_str = f" (URL: {url})" if url else ""
                     evidence_items.append(
-                        f"[{idx}] Source: {title}{page_str}{url_str} (Chunk: {cid})\n{content.strip()}"
+                        f"[{idx}] Source: {title}{page_str} (Chunk: {cid})\n{content.strip()}"
                     )
                 evidence_str = "\n\n".join(evidence_items)
             else:

@@ -4,7 +4,7 @@ from typing import Any
 
 from agent.tools.base import Tool, ToolResult
 from rag.embeddings.base import EmbeddingProvider
-from rag.retrieval import RetrievalConfig, _get_retrieval_config, retrieve_chunks
+from rag.retrieval import RetrievalConfig, retrieve_chunks
 
 
 class RAGSearchTool(Tool):
@@ -16,7 +16,7 @@ class RAGSearchTool(Tool):
         config: RetrievalConfig | None = None,
     ) -> None:
         self.embedding_provider = embedding_provider
-        self.config = config or _get_retrieval_config()
+        self.config = config or RetrievalConfig()
 
     @property
     def name(self) -> str:
@@ -123,22 +123,6 @@ class RAGSearchTool(Tool):
             }
             if meta.get("page") is not None:
                 chunk_dict["page"] = meta["page"]
-
-            url = None
-            if meta.get("url") is not None:
-                url = str(meta["url"])
-            elif meta.get("canonical_url") is not None:
-                url = str(meta["canonical_url"])
-            elif hasattr(r, "chunk") and hasattr(r.chunk, "document") and getattr(r.chunk.document, "url", None):
-                url = str(r.chunk.document.url)
-            elif r.document_source and str(r.document_source).startswith(("http://", "https://")):
-                url = str(r.document_source)
-
-            if url:
-                chunk_dict["url"] = url
-                if "url" not in meta:
-                    meta["url"] = url
-
             output_chunks.append(chunk_dict)
 
         return ToolResult(
