@@ -79,6 +79,51 @@ class Document(models.Model):
             return self.metadata.get("file_size")
         return None
 
+    @property
+    def url(self) -> str:
+        """Return the source URL if this document originated from a web page."""
+        if isinstance(self.metadata, dict):
+            u = self.metadata.get("url") or self.metadata.get("canonical_url")
+            if u:
+                return str(u)
+        if self.source and self.source.startswith(("http://", "https://")):
+            return self.source
+        return ""
+
+    @property
+    def canonical_url(self) -> str:
+        """Return the canonical URL if available."""
+        if isinstance(self.metadata, dict):
+            return str(self.metadata.get("canonical_url") or "")
+        return ""
+
+    @property
+    def domain(self) -> str:
+        """Return the domain of the source URL if available."""
+        if isinstance(self.metadata, dict):
+            d = self.metadata.get("domain")
+            if d:
+                return str(d)
+        u = self.url
+        if u:
+            from urllib.parse import urlsplit
+            try:
+                return urlsplit(u).netloc
+            except Exception:
+                pass
+        return ""
+
+    @property
+    def chunk_count(self) -> int:
+        """Return the number of stored chunks for this document."""
+        if hasattr(self, "_chunk_count"):
+            return self._chunk_count
+        return self.chunks.count()
+
+    @chunk_count.setter
+    def chunk_count(self, value: int) -> None:
+        self._chunk_count = value
+
     def __str__(self) -> str:
         return f"Document({self.title}, status={self.status})"
 

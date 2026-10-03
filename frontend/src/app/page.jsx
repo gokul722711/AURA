@@ -71,9 +71,10 @@ export default function Home() {
 
   // Add Document State
   const [showAddForm, setShowAddForm] = useState(false);
-  const [ingestMode, setIngestMode] = useState("file"); // 'file' | 'paste'
+  const [ingestMode, setIngestMode] = useState("file"); // 'file' | 'url' | 'paste'
   const [selectedFile, setSelectedFile] = useState(null);
   const [newTitle, setNewTitle] = useState("");
+  const [newUrl, setNewUrl] = useState("");
   const [newContent, setNewContent] = useState("");
   const [newSource, setNewSource] = useState("");
   const [ingesting, setIngesting] = useState(false);
@@ -91,6 +92,7 @@ export default function Home() {
   const getDocTypeBadge = (sourceType, filename) => {
     const t = (sourceType || "").toLowerCase();
     const ext = (filename || "").split(".").pop().toLowerCase();
+    if (t === "web_page" || t === "url") return { label: "Web Page", icon: "🌐", className: "badge-web" };
     if (t === "pdf" || ext === "pdf") return { label: "PDF", icon: "📄", className: "badge-pdf" };
     if (t === "docx" || ext === "docx") return { label: "DOCX", icon: "📝", className: "badge-docx" };
     if (t === "markdown" || ext === "md" || ext === "markdown") return { label: "Markdown", icon: "📋", className: "badge-md" };
@@ -367,6 +369,60 @@ export default function Home() {
         await fetchDocuments();
       } catch (err) {
         setAddError(err.message || "File ingestion failed.");
+      } finally {
+        setIngesting(false);
+      }
+    } else if (ingestMode === "url") {
+      const urlTrimmed = newUrl.trim();
+      if (!urlTrimmed) {
+        setAddError("Please enter a public web page URL.");
+        return;
+      }
+      try {
+        const parsed = new URL(urlTrimmed);
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          setAddError("Only HTTP and HTTPS URLs are supported.");
+          return;
+        }
+      } catch (_) {
+        setAddError("Please enter a valid URL (e.g. https://example.com/article).");
+        return;
+      }
+
+      setIngesting(true);
+      try {
+        const payload = { url: urlTrimmed };
+        if (newTitle.trim()) {
+          payload.title = newTitle.trim();
+        }
+
+        const response = await fetch(getApiUrl("documents"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || data.detail || `HTTP ${response.status}`);
+        }
+
+        setIngestSuccess({
+          id: data.id,
+          title: data.title,
+          chunkCount: data.chunk_count,
+          sourceType: data.source_type,
+          url: data.url,
+        });
+
+        setNewUrl("");
+        setNewTitle("");
+        setShowAddForm(false);
+        await fetchDocuments();
+      } catch (err) {
+        setAddError(err.message || "URL ingestion failed.");
       } finally {
         setIngesting(false);
       }
@@ -795,6 +851,16 @@ export default function Home() {
                           <p className="source-origin">
                             {src.document_source || "unknown"}
                           </p>
+                          {src.url && (
+                            <a
+                              href={src.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="source-url-link"
+                            >
+                              🌐 {src.url}
+                            </a>
+                          )}
                           <div className="source-meta">
                             <span className="label-hint">
                               {src.chunk_count || src.chunk_ids?.length || 0} chunk(s)
@@ -849,6 +915,16 @@ export default function Home() {
                           <div className="evidence-content">{ev.content}</div>
                           <div className="evidence-footer">
                             <span>Origin: {ev.document_source || "unknown"}</span>
+                            {ev.url && (
+                              <a
+                                href={ev.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="evidence-url-link"
+                              >
+                                🌐 {ev.url}
+                              </a>
+                            )}
                             {(ev.page != null || ev.metadata?.page != null) && (
                               <span className="evidence-page-tag">
                                 Page: {ev.page != null ? ev.page : ev.metadata.page}
@@ -934,7 +1010,7 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* Mode Selector: Upload File vs Paste Text */}
+                {/* Mode Selector: Upload File vs Web URL vs Paste Text */}
                 <div className="kb-mode-toggle" role="tablist">
                   <button
                     type="button"
@@ -948,6 +1024,19 @@ export default function Home() {
                     disabled={ingesting}
                   >
                     📁 Upload File (.txt, .md, .pdf, .docx)
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={ingestMode === "url"}
+                    className={`kb-mode-tab ${ingestMode === "url" ? "active" : ""}`}
+                    onClick={() => {
+                      setIngestMode("url");
+                      setAddError(null);
+                    }}
+                    disabled={ingesting}
+                  >
+                    🌐 Ingest Web URL
                   </button>
                   <button
                     type="button"
@@ -1023,6 +1112,42 @@ export default function Home() {
                         />
                       </div>
                     </>
+                  ) : ingestMode === "url" ? (
+                    <>
+                      <div key="field-url-input">
+                        <label htmlFor="doc-url-input" className="label-text">
+                          Public Web Page URL <span className="required-star">*</span>
+                          <span className="label-hint"> (HTTP/HTTPS article or documentation page)</span>
+                        </label>
+                        <input
+                          key="input-web-url"
+                          id="doc-url-input"
+                          type="url"
+                          className="text-input"
+                          placeholder="https://example.com/article"
+                          value={newUrl ?? ""}
+                          onChange={(e) => setNewUrl(e.target.value)}
+                          disabled={ingesting}
+                          required
+                        />
+                      </div>
+
+                      <div key="field-url-title">
+                        <label htmlFor="doc-url-title-input" className="label-text">
+                          Document Title <span className="label-hint">(optional, defaults to page title)</span>
+                        </label>
+                        <input
+                          key="input-url-title"
+                          id="doc-url-title-input"
+                          type="text"
+                          className="text-input"
+                          placeholder="e.g. Quantum Computing Breakthrough"
+                          value={newTitle ?? ""}
+                          onChange={(e) => setNewTitle(e.target.value)}
+                          disabled={ingesting}
+                        />
+                      </div>
+                    </>
                   ) : (
                     <>
                       <div key="field-paste-title">
@@ -1091,6 +1216,7 @@ export default function Home() {
                       onClick={() => {
                         setShowAddForm(false);
                         setSelectedFile(null);
+                        setNewUrl("");
                         setAddError(null);
                       }}
                       disabled={ingesting}
@@ -1104,6 +1230,7 @@ export default function Home() {
                       disabled={
                         ingesting ||
                         (ingestMode === "file" && !selectedFile) ||
+                        (ingestMode === "url" && !newUrl.trim()) ||
                         (ingestMode === "paste" && (!newTitle.trim() || !newContent.trim()))
                       }
                     >
@@ -1114,7 +1241,13 @@ export default function Home() {
                         </>
                       ) : (
                         <>
-                          <span>{ingestMode === "file" ? "Upload & Ingest File" : "Ingest Document"}</span>
+                          <span>
+                            {ingestMode === "file"
+                              ? "Upload & Ingest File"
+                              : ingestMode === "url"
+                              ? "Ingest Web Page"
+                              : "Ingest Document"}
+                          </span>
                           <span aria-hidden="true">→</span>
                         </>
                       )}
@@ -1196,9 +1329,14 @@ export default function Home() {
                                 {formatFileSize(doc.file_size)}
                               </span>
                             )}
+                            {doc.domain && (
+                              <span className="doc-domain-tag">
+                                🔗 {doc.domain}
+                              </span>
+                            )}
                             {doc.source && (
                               <span className="doc-source-tag">
-                                📁 {doc.source}
+                                {doc.source_type === "web_page" ? "🌐 " : "📁 "}{doc.source}
                               </span>
                             )}
                             {doc.created_at && (
@@ -1270,6 +1408,37 @@ export default function Home() {
                               <span className="preview-label">Format:</span>
                               <span className="preview-val">{typeBadge.label}</span>
                             </div>
+                            {doc.url && (
+                              <div>
+                                <span className="preview-label">URL:</span>
+                                <a
+                                  href={doc.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="preview-link"
+                                >
+                                  {doc.url}
+                                </a>
+                              </div>
+                            )}
+                            {doc.domain && (
+                              <div>
+                                <span className="preview-label">Domain:</span>
+                                <span className="preview-val">{doc.domain}</span>
+                              </div>
+                            )}
+                            {doc.metadata?.author && (
+                              <div>
+                                <span className="preview-label">Author:</span>
+                                <span className="preview-val">{doc.metadata.author}</span>
+                              </div>
+                            )}
+                            {doc.metadata?.date && (
+                              <div>
+                                <span className="preview-label">Date:</span>
+                                <span className="preview-val">{doc.metadata.date}</span>
+                              </div>
+                            )}
                             {doc.filename && (
                               <div>
                                 <span className="preview-label">Filename:</span>

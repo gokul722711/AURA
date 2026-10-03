@@ -8,15 +8,22 @@ from agent.state import AgentState, AgentStatus
 from rag.retrieval import RetrievalResult
 
 
-def make_citation(document_title: str, chunk_id: str, page: int | None = None) -> str:
+def make_citation(
+    document_title: str,
+    chunk_id: str,
+    page: int | None = None,
+    url: str | None = None,
+) -> str:
     """Generate canonical citation string for an evidence chunk.
 
-    Includes page number if present (e.g. for PDF documents).
+    Includes page number if present (e.g. for PDF documents), or URL if present (e.g. for web pages).
     """
     title = document_title.strip() if document_title else "Untitled"
     cid = chunk_id.strip() if chunk_id else "N/A"
     if page is not None:
         return f"[{title}, Page: {page}, Chunk: {cid}]"
+    if url:
+        return f"[{title}, {url}, Chunk: {cid}]"
     return f"[{title}, Chunk: {cid}]"
 
 
@@ -57,6 +64,8 @@ def _copy_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
             pages = s.get("pages")
             if isinstance(pages, list):
                 s_dict["pages"] = list(pages)
+            if "url" in s and s["url"]:
+                s_dict["url"] = s["url"]
             copied.append(s_dict)
         else:
             copied.append(s)
@@ -98,12 +107,28 @@ class ResearchEvidence:
                 return int(p)
         return None
 
+    @property
+    def url(self) -> str | None:
+        """Web URL if available in metadata or document_source."""
+        if isinstance(self.metadata, dict):
+            u = self.metadata.get("url") or self.metadata.get("canonical_url")
+            if u and isinstance(u, str) and u.startswith(("http://", "https://")):
+                return u
+        if self.document_source and self.document_source.startswith(("http://", "https://")):
+            return self.document_source
+        return None
+
     def __post_init__(self) -> None:
         if not self.citation:
             object.__setattr__(
                 self,
                 "citation",
-                make_citation(self.document_title, self.chunk_id, page=self.page),
+                make_citation(
+                    self.document_title,
+                    self.chunk_id,
+                    page=self.page,
+                    url=self.url,
+                ),
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -120,6 +145,8 @@ class ResearchEvidence:
         }
         if self.page is not None:
             data["page"] = self.page
+        if self.url is not None:
+            data["url"] = self.url
         return data
 
     @classmethod
@@ -141,6 +168,8 @@ class ResearchEvidence:
         clean_meta = dict(meta) if isinstance(meta, dict) else {}
         if "page" in data and "page" not in clean_meta and data["page"] is not None:
             clean_meta["page"] = data["page"]
+        if "url" in data and "url" not in clean_meta and data["url"]:
+            clean_meta["url"] = data["url"]
         return cls(
             chunk_id=chunk_id,
             document_title=doc_title,
@@ -172,7 +201,7 @@ def _aggregate_sources(evidence: list[ResearchEvidence]) -> list[dict[str, Any]]
 
     Includes document_id in grouping identity so distinct documents with
     identical title and source metadata remain separate entries.
-    Preserves page coverage where available.
+    Preserves page coverage and source URL where available.
     """
     sources_map: dict[tuple[str | None, str, str], dict[str, Any]] = {}
     for ev in evidence:
@@ -186,6 +215,8 @@ def _aggregate_sources(evidence: list[ResearchEvidence]) -> list[dict[str, Any]]
                 "chunk_ids": [],
                 "pages": [],
             }
+            if ev.url:
+                sources_map[key]["url"] = ev.url
         sources_map[key]["chunk_count"] += 1
         sources_map[key]["chunk_ids"].append(ev.chunk_id)
         if ev.page is not None and ev.page not in sources_map[key]["pages"]:

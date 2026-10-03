@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-**M11 — Knowledge Ingestion + Advanced Retrieval: COMPLETE**
+**M12 — URL & Web-Page Knowledge Ingestion: COMPLETE**
 
 ---
 
@@ -459,6 +459,69 @@ Verified:
 * `python manage.py makemigrations --check` detects no changes
 * `git diff --check` passes with 0 issues
 
+### M12 — URL & Web-Page Knowledge Ingestion
+
+AURA's Knowledge Base extended to ingest public web pages from URLs directly through the existing M11 RAG pipeline (extraction → normalization → chunking → pgvector embeddings → retrieval → research evidence → citations).
+
+Implemented:
+
+* **SSRF Prevention & Security Layer (`backend/rag/web/security.py`)**:
+  * Strict scheme validation (`http://` and `https://` only; rejects `file://`, `ftp://`, `javascript:`, `data:`, `gopher://`, etc.).
+  * Embedded credentials rejected without credential leakage.
+  * Internal IP and loopback blocking (`127.0.0.0/8`, `::1`, `0.0.0.0`, RFC1918 private IPv4 `10/8`, `172.16/12`, `192.168/16`, IPv6 unique local `fc00::/7`, link-local `169.254.0.0/16`, `fe80::/10`, multicast `224.0.0.0/4`, reserved `240.0.0.0/4`).
+  * Forbidden hostname suffixes blocked (`localhost`, `.local`, `.internal`, `.lan`, etc.).
+  * DNS resolution validation: inspects resolved socket addresses to prevent DNS rebinding SSRF.
+  * Canonicalization rules (strips default ports 80/443, strips fragments `#anchor`, normalizes host/scheme casing and trailing slash).
+* **WebFetcher Abstraction (`backend/rag/web/base.py`, `backend/rag/web/fetcher.py`, `backend/rag/web/mock.py`)**:
+  * Provider-neutral `WebFetcher` ABC returning `WebFetchResult`.
+  * `HTTPXWebFetcher` with streaming body limit enforcement (5MB default), connect/read timeouts (5s/10s), user-agent header.
+  * Per-hop SSRF validation across all redirects (max 5 redirects; validates target `Location` before connection; blocks redirects to localhost or private IPs).
+  * Content-Type validation: permits `text/html` and `application/xhtml+xml`; rejects arbitrary binaries, PDFs, images.
+  * `MockWebFetcher` for deterministic offline testing with canned responses or synthetic HTML.
+* **WebPageExtractor (`backend/rag/extraction/web.py`)**:
+  * Implements `DocumentExtractor` contract, registered under `.html`, `.htm`, `text/html`, `application/xhtml+xml`.
+  * Isolates Trafilatura for main-content and structured metadata extraction (title, author, date, description, canonical URL).
+  * Strips navigation, ads, footers, boilerplate, and decodes HTML entities.
+  * Clear failure on client-side JavaScript SPA shells or empty pages.
+* **Model & Ingestion Pipeline Updates (`backend/rag/models.py`, `backend/rag/ingestion.py`)**:
+  * `Document` model properties: `url`, `canonical_url`, `domain`, and `chunk_count` (with setter for annotations).
+  * Duplicate URL detection accounting for trailing slashes, fragments, and casing.
+  * `ingest_url()` fetches, extracts, normalizes, chunks, embeds, and stores chunks with web provenance (`url`, `domain`, `canonical_url`, `title`, `source_type`).
+* **Research Citations (`backend/agent/results.py`)**:
+  * Citations for web sources format as `[Title, URL, Chunk: ID]`.
+  * `ResearchEvidence` and `ResearchResult.sources` preserve and expose `url` and `domain`.
+* **API Extension (`backend/rag/views.py`)**:
+  * `POST /api/documents/` accepts JSON `{"url": "https://...", "title": "..."}`.
+  * Returns 201 Created with metadata, 400 Bad Request on validation/security/SSRF errors, 409 Conflict on duplicate URLs.
+  * Document serialization includes `url`, `canonical_url`, `domain`.
+* **Frontend UI (`frontend/src/app/page.jsx`, `frontend/src/app/globals.css`)**:
+  * "🌐 Ingest Web URL" tab in Knowledge Base mode selector.
+  * Dedicated URL input form with validation, placeholder, and submit feedback.
+  * Web Page type badges (`badge-web`) with globe icon.
+  * Clickable domain and URL tags in document list, document preview modal, research evidence cards, and research sources grid.
+* **Testing**:
+  * Deterministic test suite for URL security (`backend/rag/tests/test_web_security.py`).
+  * WebFetcher tests with mock transport (`backend/rag/tests/test_web_fetcher.py`).
+  * HTML extraction tests with local fixtures (`backend/rag/tests/test_web_extractor.py`).
+  * Pipeline integration tests (`backend/rag/tests/test_url_ingestion.py`).
+  * API endpoint tests (`backend/rag/tests/test_document_api_m12.py`).
+  * End-to-end research retrieval and citation tests (`backend/rag/tests/test_e2e_research_m12.py`).
+  * Frontend unit tests (`frontend/tests/web-url-ingestion.test.mjs`).
+
+* **M12 Security Remediation**:
+  * **Finding 1 (High — DNS Rebinding / TOCTOU SSRF)**: Redesigned the fetch path with `SSRFSafeSyncBackend` and `SSRFSafeTransport` in `backend/rag/web/security.py` and `backend/rag/web/fetcher.py`. Pinned the SSRF-validated IP directly to the HTTP connection pool, eliminating the DNS TOCTOU window between initial URL validation and TCP connection while fully preserving TLS SNI, certificate verification, and HTTP `Host` header semantics.
+  * **Finding 2 (High — URL Canonicalization / Redirect Loop)**: Explicitly separated URL security validation (`validate_url_security`) from deduplication canonicalization (`canonicalize_url`). `validate_url_security` preserves resource path identity and trailing slashes (`/docs` and `/docs/`), preventing infinite redirect loops on trailing-slash endpoints.
+  * **Finding 3 (Low — Missing/Empty Content-Type Header)**: `HTTPXWebFetcher` strictly rejects HTTP responses with missing or empty `Content-Type` headers, only accepting `text/html` and `application/xhtml+xml`.
+  * **Regression Tests**: Added deterministic regression tests demonstrating that hostnames whose DNS changes from public to blocked private IP cannot cause internal requests, trailing-slash redirects work without looping, and missing/empty Content-Type responses are rejected.
+
+Verified:
+
+* 596/596 backend tests pass (`python manage.py test`)
+* 27/27 frontend tests pass (`npm test`)
+* Next.js production build passes (`npm run build`)
+* `python manage.py check` passes with 0 issues
+* `python manage.py makemigrations --check` detects no changes
+* `git diff --check` passes with 0 issues
 
 ---
 
@@ -477,8 +540,9 @@ M8  Knowledge Base & Document Ingestion COMPLETE
 M9  Async Research & Run History        COMPLETE
 M10 Research Modes + Web Research       COMPLETE
 M11 Knowledge Ingestion + Adv Retrieval COMPLETE
-M12 Local/Open Model Expansion
-M13 Deployment
+M12 URL & Web-Page Knowledge Ingestion  COMPLETE
+M13 Local/Open Model Expansion
+M14 Deployment
 ```
 
 Milestones are incremental. Each milestone should produce a working, tested increment.

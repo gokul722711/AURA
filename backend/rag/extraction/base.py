@@ -34,6 +34,11 @@ class ExtractedDocument:
     source_type: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def title(self) -> str:
+        """Convenience property returning title from metadata if present."""
+        return self.metadata.get("title") or ""
+
 
 class DocumentExtractor(ABC):
     """Abstract base class for all AURA document format extractors.

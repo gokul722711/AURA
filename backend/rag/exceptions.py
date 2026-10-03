@@ -25,6 +25,42 @@ class UnsupportedFormatError(DocumentError):
     pass
 
 
+class URLSecurityError(DocumentError):
+    """Raised when a URL fails format validation or security checks."""
+
+    pass
+
+
+class SSRFError(URLSecurityError):
+    """Raised when a URL attempts to target private, loopback, or internal networks."""
+
+    pass
+
+
+class DuplicateURLError(DocumentError):
+    """Raised when attempting to ingest a URL that has already been indexed."""
+
+    pass
+
+
+class WebFetchError(DocumentError):
+    """Raised when an error occurs during HTTP retrieval of a web page."""
+
+    pass
+
+
+class ContentTooLargeError(WebFetchError):
+    """Raised when the fetched web page response body exceeds configured size limit."""
+
+    pass
+
+
+class UnsupportedContentTypeError(WebFetchError):
+    """Raised when the fetched web page returns an unsupported Content-Type (non-HTML)."""
+
+    pass
+
+
 class ChunkingError(RAGError):
     """Raised when text chunking fails."""
 

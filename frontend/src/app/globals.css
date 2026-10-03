@@ -1741,3 +1741,55 @@ body {
   border-color: rgba(124, 92, 252, 0.3);
   background: rgba(124, 92, 252, 0.08);
 }
+
+.badge-web {
+  background: rgba(14, 165, 233, 0.12);
+  border: 1px solid rgba(14, 165, 233, 0.3);
+  color: #38bdf8;
+}
+
+.doc-domain-tag,
+.evidence-url-link {
+  font-family: var(--font-mono);
+  font-size: 0.725rem;
+  padding: 0.15rem 0.45rem;
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px solid rgba(14, 165, 233, 0.25);
+  border-radius: 4px;
+  color: #38bdf8;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  transition: all 0.15s ease;
+}
+
+.evidence-url-link:hover {
+  background: rgba(14, 165, 233, 0.16);
+  border-color: #38bdf8;
+}
+
+.source-url-link {
+  font-size: 0.75rem;
+  color: #38bdf8;
+  text-decoration: none;
+  word-break: break-all;
+  display: inline-block;
+  margin-top: 0.25rem;
+}
+
+.source-url-link:hover {
+  text-decoration: underline;
+}
+
+.preview-link {
+  color: #38bdf8;
+  text-decoration: none;
+  word-break: break-all;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.preview-link:hover {
+  text-decoration: underline;
+}

@@ -7,6 +7,7 @@ from rag.extraction.docx import DocxExtractor
 from rag.extraction.markdown import MarkdownExtractor
 from rag.extraction.pdf import PDFExtractor
 from rag.extraction.txt import TextExtractor
+from rag.extraction.web import WebPageExtractor
 
 _EXTRACTORS: dict[str, type[DocumentExtractor]] = {
     ".txt": TextExtractor,
@@ -14,6 +15,8 @@ _EXTRACTORS: dict[str, type[DocumentExtractor]] = {
     ".markdown": MarkdownExtractor,
     ".pdf": PDFExtractor,
     ".docx": DocxExtractor,
+    ".html": WebPageExtractor,
+    ".htm": WebPageExtractor,
 }
 
 _CONTENT_TYPE_MAP: dict[str, type[DocumentExtractor]] = {
@@ -22,6 +25,8 @@ _CONTENT_TYPE_MAP: dict[str, type[DocumentExtractor]] = {
     "text/x-markdown": MarkdownExtractor,
     "application/pdf": PDFExtractor,
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": DocxExtractor,
+    "text/html": WebPageExtractor,
+    "application/xhtml+xml": WebPageExtractor,
 }
 
 SUPPORTED_EXTENSIONS: tuple[str, ...] = (".txt", ".md", ".pdf", ".docx")

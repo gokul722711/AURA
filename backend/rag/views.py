@@ -14,11 +14,17 @@ from rest_framework.views import APIView
 
 from agent.security import sanitize_data, sanitize_text
 from rag.embeddings.base import EmbeddingProvider
-from rag.exceptions import DocumentError
+from rag.exceptions import (
+    DocumentError,
+    DuplicateURLError,
+    URLSecurityError,
+    WebFetchError,
+)
 from rag.ingestion import (
     get_default_embedding_provider,
     ingest_document,
     ingest_file,
+    ingest_url,
 )
 from rag.models import Document
 
@@ -45,6 +51,9 @@ def _serialize_document(doc: Document, include_content: bool = True) -> dict[str
         "source_type": doc.source_type,
         "filename": doc.filename,
         "file_size": doc.file_size,
+        "url": getattr(doc, "url", ""),
+        "canonical_url": getattr(doc, "canonical_url", ""),
+        "domain": getattr(doc, "domain", ""),
         "metadata": doc_meta,
         "status": doc.status,
         "chunk_count": chunk_count,
@@ -164,7 +173,59 @@ class DocumentListCreateView(APIView):
             result_dict = _serialize_document(document, include_content=True)
             return Response(result_dict, status=status.HTTP_201_CREATED)
 
-        # --- Option 2: Existing JSON pasted-text ingestion ---
+        # --- Option 2: Web URL ingestion ---
+        if isinstance(request.data, dict) and "url" in request.data:
+            url_val = request.data.get("url")
+            if not url_val or not isinstance(url_val, str) or not url_val.strip():
+                return Response(
+                    {"error": "Field 'url' must be a non-empty string."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            custom_title = request.data.get("title")
+            if custom_title is not None and not isinstance(custom_title, str):
+                return Response(
+                    {"error": "Field 'title' must be a string."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            try:
+                embedding_provider = self.get_embedding_provider()
+                document = ingest_url(
+                    url=url_val.strip(),
+                    title=custom_title.strip() if custom_title else None,
+                    embedding_provider=embedding_provider,
+                )
+            except DuplicateURLError as exc:
+                return Response(
+                    {"error": sanitize_text(str(exc))},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            except (URLSecurityError, DocumentError) as exc:
+                return Response(
+                    {"error": sanitize_text(str(exc))},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            except WebFetchError as exc:
+                logger.warning("Web page fetch failed for %s: %s", sanitize_text(url_val), exc)
+                return Response(
+                    {"error": sanitize_text(str(exc))},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            except Exception as exc:
+                logger.warning("Web page ingestion failed: %s", sanitize_text(str(exc)))
+                return Response(
+                    {
+                        "error": "Web page ingestion failed.",
+                        "detail": sanitize_text(str(exc)),
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            result_dict = _serialize_document(document, include_content=True)
+            return Response(result_dict, status=status.HTTP_201_CREATED)
+
+        # --- Option 3: Existing JSON pasted-text ingestion ---
         data = request.data
         if not isinstance(data, dict):
             return Response(

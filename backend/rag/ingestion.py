@@ -7,21 +7,26 @@ Supports TXT, Markdown, PDF, and DOCX formats while preserving source metadata.
 
 import logging
 import os
-from typing import Any
+from urllib.parse import urlsplit
 
 from django.conf import settings
-from django.db import transaction
+from django.db import models, transaction
+from django.utils import timezone
 
 from rag.chunking import ChunkingConfig, chunk_extracted_document, chunk_text
 from rag.embeddings.base import EmbeddingProvider
 from rag.embeddings.registry import create_embedding_provider
-from rag.exceptions import DocumentError, EmbeddingError
+from rag.exceptions import DocumentError, DuplicateURLError, EmbeddingError
 from rag.extraction import (
     ExtractedDocument,
     get_extractor,
     normalize_document,
 )
+from rag.extraction.web import WebPageExtractor
 from rag.models import Document, DocumentChunk
+from rag.web.base import WebFetcher
+from rag.web.fetcher import HTTPXWebFetcher
+from rag.web.security import canonicalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +246,7 @@ def ingest_extracted_document(
                 start_offset=chunk.start_offset,
                 end_offset=chunk.end_offset,
                 embedding=embedding,
-                metadata=chunk.metadata or {},
+                metadata={**doc_metadata, **(chunk.metadata or {})},
             )
             for chunk, embedding in zip(chunks, embeddings)
         ]
@@ -326,5 +331,126 @@ def ingest_file(
         embedding_provider=embedding_provider,
         source=clean_source,
         metadata=file_metadata,
+        chunking_config=chunking_config,
+    )
+
+
+def ingest_url(
+    url: str,
+    title: str | None = None,
+    fetcher: WebFetcher | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
+    chunking_config: ChunkingConfig | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> Document:
+    """Ingest a public web page from a URL into the RAG system.
+
+    Full pipeline:
+    URL validation / SSRF protection
+      ↓
+    WebFetcher (HTTPX)
+      ↓
+    WebPageExtractor (Trafilatura)
+      ↓
+    normalization
+      ↓
+    chunking
+      ↓
+    EmbeddingProvider
+      ↓
+    pgvector storage.
+
+    Args:
+        url: Public web page URL.
+        title: Optional custom document title; defaults to page title or domain.
+        fetcher: WebFetcher instance; defaults to HTTPXWebFetcher.
+        embedding_provider: Optional EmbeddingProvider.
+        chunking_config: Optional ChunkingConfig.
+        metadata: Optional additional metadata.
+
+    Returns:
+        The created Document instance with status 'ready'.
+
+    Raises:
+        URLSecurityError / SSRFError: If URL fails security/SSRF constraints.
+        DuplicateURLError: If the URL has already been ingested.
+        WebFetchError: If HTTP retrieval fails.
+        ExtractionError: If page has no extractable text.
+        DocumentError: If validation or persistence fails.
+    """
+    if not url or not isinstance(url, str) or not url.strip():
+        raise DocumentError("URL must be a non-empty string.")
+
+    canonical_url = canonicalize_url(url)
+
+    # Prevent accidental duplicate ingestion of the same URL
+    canonical_no_slash = canonical_url.rstrip("/")
+    canonical_with_slash = canonical_no_slash + "/"
+
+    existing = (
+        Document.objects.filter(
+            models.Q(source=canonical_url)
+            | models.Q(source=canonical_no_slash)
+            | models.Q(source=canonical_with_slash)
+            | models.Q(metadata__url=canonical_url)
+            | models.Q(metadata__canonical_url=canonical_url)
+        )
+        .exclude(status=Document.STATUS_ERROR)
+        .first()
+    )
+    if existing:
+        raise DuplicateURLError(
+            f"URL '{canonical_url}' has already been indexed as document '{existing.title}'."
+        )
+
+    active_fetcher = fetcher or HTTPXWebFetcher()
+    fetch_result = active_fetcher.fetch(canonical_url)
+
+    extractor = WebPageExtractor()
+    extracted_doc = extractor.extract(fetch_result.body, filename=fetch_result.final_url)
+    normalized = normalize_document(extracted_doc)
+
+    # Determine title
+    clean_title = (
+        title.strip()
+        if (title and isinstance(title, str) and title.strip())
+        else ""
+    )
+    if not clean_title:
+        clean_title = (
+            normalized.metadata.get("title", "").strip()
+            if isinstance(normalized.metadata, dict)
+            else ""
+        )
+    if not clean_title:
+        parsed_final = urlsplit(fetch_result.final_url)
+        clean_title = parsed_final.path.strip("/").split("/")[-1] or parsed_final.netloc
+
+    parsed_final = urlsplit(fetch_result.final_url)
+    domain = parsed_final.netloc or urlsplit(canonical_url).netloc
+
+    web_metadata: dict[str, Any] = {
+        "source_type": "web_page",
+        "url": canonical_url,
+        "final_url": fetch_result.final_url,
+        "canonical_url": normalized.metadata.get("canonical_url") or canonical_url,
+        "domain": domain,
+        "status_code": fetch_result.status_code,
+        "retrieved_at": timezone.now().isoformat(),
+    }
+    for k in ("author", "date", "description", "site_name"):
+        val = normalized.metadata.get(k)
+        if val:
+            web_metadata[k] = val
+
+    if metadata and isinstance(metadata, dict):
+        web_metadata.update(metadata)
+
+    return ingest_extracted_document(
+        title=clean_title,
+        extracted_doc=normalized,
+        embedding_provider=embedding_provider,
+        source=canonical_url,
+        metadata=web_metadata,
         chunking_config=chunking_config,
     )
