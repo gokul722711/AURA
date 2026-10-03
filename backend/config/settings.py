@@ -175,6 +175,9 @@ AI_GATEWAY = {
     "ENDPOINT": os.environ.get("AI_ENDPOINT", ""),
     "TIMEOUT": float(os.environ.get("AI_TIMEOUT", "30.0")),
     "API_KEY": os.environ.get("AI_API_KEY", ""),
+    "MAX_RETRIES": int(os.environ.get("AI_GATEWAY_MAX_RETRIES", "2")),
+    "RETRY_BACKOFF_BASE": float(os.environ.get("AI_GATEWAY_RETRY_BACKOFF_BASE", "5.0")),
+    "RETRY_BACKOFF_FACTOR": float(os.environ.get("AI_GATEWAY_RETRY_BACKOFF_FACTOR", "3.0")),
 }
 
 # ---------------------------------------------------------------------------
@@ -203,6 +206,9 @@ AI_RAG = {
         if os.environ.get("AI_RAG_CONTEXT_MAX_CHARS")
         else None
     ),
+    "RERANKER_MODEL": os.environ.get("AI_RAG_RERANKER_MODEL", "ms-marco-TinyBERT-L-2-v2"),
+    "RERANKER_CACHE_DIR": os.environ.get("AI_RAG_RERANKER_CACHE_DIR", "/tmp"),
+    "RERANKER_MIN_SCORE": float(os.environ.get("AI_RAG_RERANKER_MIN_SCORE", "0.0001")),
 }
 
 # ---------------------------------------------------------------------------

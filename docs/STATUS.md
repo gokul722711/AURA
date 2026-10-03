@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-**M12 — URL & Web-Page Knowledge Ingestion: COMPLETE**
+**M13 — Deterministic Knowledge Base Fast Path: COMPLETE**
 
 ---
 
@@ -523,6 +523,42 @@ Verified:
 * `python manage.py makemigrations --check` detects no changes
 * `git diff --check` passes with 0 issues
 
+### M13 — Deterministic Knowledge Base Fast Path
+
+Introduced a deterministic retrieval-first execution pipeline for ordinary Knowledge Base queries (`mode="knowledge_base"`), eliminating excessive multi-step LLM planner loops while guaranteeing exactly ONE `ModelGateway.generate()` call for grounded synthesis. The existing autonomous agent runtime remains active and untouched for complex multi-tool modes (`web`, `web_knowledge_base`, `model_knowledge`).
+
+Implements:
+
+* **PostgreSQL Full-Text Search Retrieval** (`backend/rag/retrieval.py`):
+  * `retrieve_lexical_chunks()` utilizing PostgreSQL native `tsvector` and `tsquery` via Django's `SearchVector`, `SearchQuery`, and `SearchRank`.
+  * Deterministic ordering by `(-rank, pk)`.
+  * Added `.select_related("document")` on vector retrieval to eliminate N+1 SQL queries.
+* **Reciprocal Rank Fusion** (`backend/rag/fusion.py`):
+  * `reciprocal_rank_fusion()` combining dense pgvector cosine similarity rankings and lexical FTS rankings.
+  * Deterministic tie-breaking using `(-rrf_score, chunk_id)`.
+  * Chunk-level deduplication preserving all document, source, URL, and page metadata.
+* **Reranker Abstraction & FlashRank Adapter** (`backend/rag/rerankers/`):
+  * Provider-agnostic `Reranker` abstract base interface isolating external ranking libraries behind an AURA-owned contract.
+  * `FlashRankReranker` adapter integrating FlashRank's lightweight ONNX cross-encoders with dependency injection support for offline execution.
+  * `MockReranker` providing deterministic, offline reranking for tests without internet downloads.
+* **Deterministic KB Pipeline** (`backend/rag/fast_kb.py`):
+  * `DeterministicKBPipeline` orchestrating query normalization → dense retrieval + lexical retrieval → RRF fusion → FlashRank reranking → context selection/bounding → single LLM synthesis → canonical `ResearchResult`.
+  * Critical model call constraint: 0 planner calls, 0 structured output calls, 0 agent tool loops, and exactly 1 generation call.
+  * Explicit no-context handling returning a safe insufficient evidence response without LLM generation calls.
+  * Lightweight timing instrumentation recording `query_processing_ms`, `dense_retrieval_ms`, `lexical_retrieval_ms`, `rrf_ms`, `reranking_ms`, `generation_ms`, and `total_ms`.
+* **Mode-Specific Task Dispatch** (`backend/agent/tasks.py`):
+  * `execute_research_run()` dynamically dispatches `knowledge_base` runs to `DeterministicKBPipeline` while preserving `create_research_runtime()` for autonomous agent modes.
+  * Preserves 100% backward compatibility with existing API endpoints (`/api/research/`), Celery task lifecycle, and Next.js frontend results rendering.
+* **Automated Test Suite**:
+  * 32 new deterministic unit and integration tests covering RRF fusion (`test_fusion.py`), PostgreSQL lexical retrieval (`test_lexical_retrieval.py`), reranker abstraction (`test_reranker.py`), fast KB pipeline constraints (`test_fast_kb.py`), and mode dispatch (`test_m13_dispatch.py`).
+
+Verified:
+
+* 628/628 backend tests pass (`python manage.py test`)
+* System check (`python manage.py check`) passes with zero issues
+* Model migrations check (`makemigrations --check`) passes with zero changes
+* `git diff --check` passes with zero issues
+
 ---
 
 ## Development Roadmap
@@ -541,9 +577,11 @@ M9  Async Research & Run History        COMPLETE
 M10 Research Modes + Web Research       COMPLETE
 M11 Knowledge Ingestion + Adv Retrieval COMPLETE
 M12 URL & Web-Page Knowledge Ingestion  COMPLETE
-M13 Local/Open Model Expansion
-M14 Deployment
+M13 Deterministic KB Fast Path          COMPLETE
+M14 Local/Open Model Expansion
+M15 Deployment
 ```
+
 
 Milestones are incremental. Each milestone should produce a working, tested increment.
 

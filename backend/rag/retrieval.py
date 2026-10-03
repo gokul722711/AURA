@@ -26,6 +26,7 @@ Retrieval uses exact database-side cosine distance for correctness.
 from dataclasses import dataclass
 
 from django.conf import settings
+from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from pgvector.django import CosineDistance
 
 from rag.embeddings.base import EmbeddingProvider
@@ -144,7 +145,7 @@ def retrieve_chunks(
     # Build queryset: annotate with distance, filter ready documents
     queryset = DocumentChunk.objects.filter(
         document__status="ready"
-    ).annotate(
+    ).select_related("document").annotate(
         distance=CosineDistance("embedding", query_embedding)
     )
 
@@ -213,3 +214,100 @@ def retrieve_chunks(
             )
 
     return results
+
+
+def retrieve_lexical_chunks(
+    query: str,
+    config: RetrievalConfig | None = None,
+) -> list[RetrievalResult]:
+    """Retrieve document chunks using PostgreSQL Full-Text Search (M13).
+
+    Uses native PostgreSQL tsvector / tsquery via Django's SearchVector and SearchQuery.
+    Results are ordered by SearchRank descending with deterministic tie-breaking by primary key.
+
+    Args:
+        query: The search query text.
+        config: Retrieval configuration. Uses settings defaults if None.
+
+    Returns:
+        List of RetrievalResult ordered by descending lexical rank.
+
+    Raises:
+        RetrievalError: If query is empty or retrieval fails.
+    """
+    if not query or not query.strip():
+        raise RetrievalError("Query must be a non-empty string.")
+
+    if config is None:
+        config = _get_retrieval_config()
+
+    try:
+        search_query = SearchQuery(query.strip(), config="english")
+        search_vector = SearchVector("content", config="english")
+
+        queryset = (
+            DocumentChunk.objects.filter(document__status="ready")
+            .select_related("document")
+            .annotate(search=search_vector, rank=SearchRank(search_vector, search_query))
+            .filter(search=search_query)
+        )
+
+        # Document ID filtering
+        if config.document_ids is not None:
+            clean_doc_ids = [str(did).strip() for did in config.document_ids if str(did).strip()]
+            queryset = queryset.filter(document_id__in=clean_doc_ids)
+
+        # Deterministic ordering: rank DESC (best match first), then pk ASC for tie-breaking
+        queryset = queryset.order_by("-rank", "pk")
+
+        results: list[RetrievalResult] = []
+
+        # Multi-document fairness cap
+        if config.max_chunks_per_document is not None:
+            doc_chunk_counts: dict[str, int] = {}
+            candidate_pool_limit = max(config.top_k * 5, 100)
+            for chunk in queryset[:candidate_pool_limit]:
+                doc_id_str = str(chunk.document_id)
+                if doc_chunk_counts.get(doc_id_str, 0) >= config.max_chunks_per_document:
+                    continue
+                doc_chunk_counts[doc_id_str] = doc_chunk_counts.get(doc_id_str, 0) + 1
+                results.append(
+                    RetrievalResult(
+                        chunk_id=str(chunk.pk),
+                        document_id=doc_id_str,
+                        content=chunk.content,
+                        score=float(chunk.rank),
+                        rank=len(results) + 1,
+                        chunk_index=chunk.chunk_index,
+                        document_title=chunk.document.title,
+                        document_source=chunk.document.source,
+                        start_offset=chunk.start_offset,
+                        end_offset=chunk.end_offset,
+                        chunk_metadata=chunk.metadata or {},
+                        chunk=chunk,
+                    )
+                )
+                if len(results) >= config.top_k:
+                    break
+        else:
+            for rank_idx, chunk in enumerate(queryset[: config.top_k], start=1):
+                results.append(
+                    RetrievalResult(
+                        chunk_id=str(chunk.pk),
+                        document_id=str(chunk.document_id),
+                        content=chunk.content,
+                        score=float(chunk.rank),
+                        rank=rank_idx,
+                        chunk_index=chunk.chunk_index,
+                        document_title=chunk.document.title,
+                        document_source=chunk.document.source,
+                        start_offset=chunk.start_offset,
+                        end_offset=chunk.end_offset,
+                        chunk_metadata=chunk.metadata or {},
+                        chunk=chunk,
+                    )
+                )
+
+        return results
+    except Exception as exc:
+        raise RetrievalError(f"Lexical retrieval failed: {exc}") from exc

@@ -66,6 +66,58 @@ def _is_redundant(
     return False
 
 
+def select_context_chunks(
+    retrieval_results: list[RetrievalResult],
+    config: ContextConfig | None = None,
+) -> list[RetrievalResult]:
+    """Filter and select chunks that fit within the context budget and redundancy rules.
+
+    Args:
+        retrieval_results: List of RetrievalResult in ranked order.
+        config: Context assembly configuration.
+
+    Returns:
+        List of accepted RetrievalResult objects.
+    """
+    if not retrieval_results:
+        return []
+
+    if config is None:
+        config = _get_context_config()
+
+    accepted: list[RetrievalResult] = []
+    doc_chunk_counts: dict[str, int] = {}
+    chars_used = 0
+
+    for result in retrieval_results:
+        # Enforce max chunks per document if configured
+        if config.max_chunks_per_document is not None:
+            if doc_chunk_counts.get(result.document_id, 0) >= config.max_chunks_per_document:
+                continue
+
+        # Skip redundant chunks
+        if _is_redundant(result, accepted):
+            continue
+
+        content = result.content
+        content_len = len(content)
+
+        # Check budget
+        if config.max_chars is not None:
+            if chars_used >= config.max_chars:
+                break
+            remaining = config.max_chars - chars_used
+            if content_len > remaining:
+                # Cannot fit this chunk; stop (preserve whole chunks only)
+                break
+
+        accepted.append(result)
+        doc_chunk_counts[result.document_id] = doc_chunk_counts.get(result.document_id, 0) + 1
+        chars_used += content_len
+
+    return accepted
+
+
 def assemble_context(
     retrieval_results: list[RetrievalResult],
     query: str,
@@ -98,39 +150,12 @@ def assemble_context(
     if not query or not query.strip():
         raise ContextAssemblyError("Query must be a non-empty string.")
 
-    if not retrieval_results:
+    accepted = select_context_chunks(retrieval_results, config=config)
+    if not accepted:
         return _format_no_context(query)
 
-    if config is None:
-        config = _get_context_config()
-
     sections = []
-    accepted: list[RetrievalResult] = []
-    doc_chunk_counts: dict[str, int] = {}
-    chars_used = 0
-
-    for result in retrieval_results:
-        # Enforce max chunks per document if configured
-        if config.max_chunks_per_document is not None:
-            if doc_chunk_counts.get(result.document_id, 0) >= config.max_chunks_per_document:
-                continue
-
-        # Skip redundant chunks
-        if _is_redundant(result, accepted):
-            continue
-
-        content = result.content
-        content_len = len(content)
-
-        # Check budget
-        if config.max_chars is not None:
-            if chars_used >= config.max_chars:
-                break
-            remaining = config.max_chars - chars_used
-            if content_len > remaining:
-                # Cannot fit this chunk; stop (preserve whole chunks only)
-                break
-
+    for result in accepted:
         source_label = result.document_source or result.document_title
         page_val = (
             result.chunk_metadata.get("page")
@@ -142,15 +167,9 @@ def assemble_context(
             f"[Source: {source_label}{page_str} | "
             f"Chunk {result.chunk_index + 1} | "
             f"Similarity: {result.score:.4f}]\n"
-            f"{content}"
+            f"{result.content}"
         )
         sections.append(section)
-        accepted.append(result)
-        doc_chunk_counts[result.document_id] = doc_chunk_counts.get(result.document_id, 0) + 1
-        chars_used += content_len
-
-    if not sections:
-        return _format_no_context(query)
 
     context_block = "\n\n---\n\n".join(sections)
 
@@ -163,6 +182,7 @@ def assemble_context(
         "--- End of Context ---\n\n"
         f"Question: {query}"
     )
+
 
 
 def _format_no_context(query: str) -> str:

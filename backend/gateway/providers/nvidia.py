@@ -11,6 +11,8 @@ from gateway.exceptions import (
     GenerationError,
     ProviderConfigurationError,
     ProviderUnavailableError,
+    TransientModelProviderError,
+    is_transient_provider_error,
 )
 from gateway.types import (
     ALL_CAPABILITIES,
@@ -149,6 +151,11 @@ class NvidiaLLMProvider(LLMProvider):
                 self._client.max_retries = effective_retries
             completion = self._client.chat.completions.create(**kwargs)
         except Exception as exc:
+            if is_transient_provider_error(exc):
+                raise TransientModelProviderError(
+                    f"NVIDIA model generation failed (transient provider failure): {exc}",
+                    status_code=getattr(exc, "status_code", None),
+                ) from exc
             raise GenerationError(f"NVIDIA model generation failed: {exc}") from exc
         finally:
             if original_retries is not None and effective_retries is not None and hasattr(self._client, "max_retries"):
@@ -210,6 +217,11 @@ class NvidiaLLMProvider(LLMProvider):
                     finish_reason=finish_reason,
                 )
         except Exception as exc:
+            if is_transient_provider_error(exc):
+                raise TransientModelProviderError(
+                    f"NVIDIA streaming transient provider failure: {exc}",
+                    status_code=getattr(exc, "status_code", None),
+                ) from exc
             raise GenerationError(f"NVIDIA streaming failed: {exc}") from exc
         finally:
             if original_retries is not None and effective_retries is not None and hasattr(self._client, "max_retries"):
@@ -258,6 +270,11 @@ class NvidiaLLMProvider(LLMProvider):
                 self._client.max_retries = effective_retries
             completion = self._client.chat.completions.create(**kwargs)
         except Exception as exc:
+            if is_transient_provider_error(exc):
+                raise TransientModelProviderError(
+                    f"NVIDIA structured output transient provider failure: {exc}",
+                    status_code=getattr(exc, "status_code", None),
+                ) from exc
             raise GenerationError(f"NVIDIA structured output generation failed: {exc}") from exc
         finally:
             if original_retries is not None and effective_retries is not None and hasattr(self._client, "max_retries"):
