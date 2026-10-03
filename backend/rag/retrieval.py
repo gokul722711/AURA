@@ -23,14 +23,17 @@ No approximate vector indexes (HNSW, IVFFlat) are used.
 Retrieval uses exact database-side cosine distance for correctness.
 """
 
+import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from django.conf import settings
+from django.db import models
 from pgvector.django import CosineDistance
 
 from rag.embeddings.base import EmbeddingProvider
 from rag.exceptions import RetrievalError
-from rag.models import DocumentChunk
+from rag.models import Document, DocumentChunk
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,66 @@ class RetrievalResult:
     chunk: DocumentChunk
 
 
+def _is_valid_uuid(val: Any) -> bool:
+    """Check if value is a valid UUID string or UUID object."""
+    if isinstance(val, uuid.UUID):
+        return True
+    try:
+        uuid.UUID(str(val).strip())
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def resolve_document_identifiers(identifiers: list[str]) -> set[str]:
+    """Resolve document identifiers (UUIDs, titles, sources, or URLs) to Document UUID strings.
+
+    Safely handles:
+      - Valid Document.id UUID strings.
+      - Document titles (case-insensitive exact match).
+      - Document sources (exact match, case-insensitive, or trailing slash normalized).
+      - Web URLs / canonical URLs from document metadata or source.
+      - Unknown identifiers: safely produces no match without raising ValidationError.
+
+    Returns:
+      A set of Document UUID strings corresponding to matched documents.
+    """
+    resolved_ids: set[str] = set()
+    non_uuid_candidates: list[str] = []
+
+    for raw in identifiers:
+        clean = str(raw).strip()
+        if not clean:
+            continue
+        if _is_valid_uuid(clean):
+            resolved_ids.add(str(uuid.UUID(clean)))
+        else:
+            non_uuid_candidates.append(clean)
+
+    if non_uuid_candidates:
+        q_filters = models.Q()
+        for cand in non_uuid_candidates:
+            cand_no_slash = cand.rstrip("/")
+            cand_with_slash = f"{cand_no_slash}/"
+            q_filters |= (
+                models.Q(title__iexact=cand)
+                | models.Q(source__iexact=cand)
+                | models.Q(source=cand_no_slash)
+                | models.Q(source=cand_with_slash)
+                | models.Q(metadata__url=cand)
+                | models.Q(metadata__url=cand_no_slash)
+                | models.Q(metadata__url=cand_with_slash)
+                | models.Q(metadata__canonical_url=cand)
+                | models.Q(metadata__canonical_url=cand_no_slash)
+                | models.Q(metadata__canonical_url=cand_with_slash)
+            )
+        matched_uuids = Document.objects.filter(q_filters).values_list("id", flat=True)
+        for mid in matched_uuids:
+            resolved_ids.add(str(mid))
+
+    return resolved_ids
+
+
 def _get_retrieval_config() -> RetrievalConfig:
     """Build RetrievalConfig from Django settings."""
     rag_settings = getattr(settings, "AI_RAG", {})
@@ -148,10 +211,14 @@ def retrieve_chunks(
         distance=CosineDistance("embedding", query_embedding)
     )
 
-    # Document ID filtering (M11)
+    # Document ID filtering (M11 / KB loop fix)
     if config.document_ids is not None:
         clean_doc_ids = [str(did).strip() for did in config.document_ids if str(did).strip()]
-        queryset = queryset.filter(document_id__in=clean_doc_ids)
+        if not clean_doc_ids:
+            queryset = queryset.none()
+        else:
+            resolved_uuids = resolve_document_identifiers(clean_doc_ids)
+            queryset = queryset.filter(document_id__in=resolved_uuids)
 
     # M3: Apply threshold filtering BEFORE top-K slice.
     # similarity = 1 - distance, so threshold T means distance <= 1 - T.

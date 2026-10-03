@@ -320,3 +320,112 @@ class E2EResearchM11Tests(TestCase):
         for ev in result.evidence:
             self.assertEqual(ev.document_id, str(doc_a.id))
             self.assertEqual(ev.document_title, "Alpha Project")
+
+    def test_non_uuid_document_title_identifier_in_research_runtime(self) -> None:
+        """KB loop regression: Planner providing document title as document_ids does not fail or lose evidence."""
+        doc_celery = ingest_file(
+            file_bytes=b"Celery is an asynchronous distributed task queue based on distributed message passing.",
+            filename="celery.txt",
+            title="Celery Documentation",
+            embedding_provider=self.embedding_provider,
+            chunking_config=ChunkingConfig(chunk_size=500, chunk_overlap=0),
+        )
+
+        chunk_id = str(doc_celery.chunks.first().id)
+        citation = make_citation(doc_celery.title, chunk_id)
+
+        # Planner outputs title "Celery Documentation" instead of UUID
+        llm_provider = E2EScriptedLLMProvider([
+            json.dumps({
+                "decision": "continue",
+                "query": "celery architecture",
+                "document_ids": ["Celery Documentation"],
+            }),
+            json.dumps({"decision": "finish"}),
+            f"Celery handles distributed task execution {citation}.",
+        ])
+
+        runtime = create_research_runtime(
+            gateway=ModelGateway(provider=llm_provider),
+            embedding_provider=self.embedding_provider,
+            mode="knowledge_base",
+        )
+
+        result = runtime.run_research("Explain Celery distributed task queue")
+
+        # Must complete successfully with no errors
+        self.assertEqual(result.status, AgentStatus.COMPLETED)
+        self.assertEqual(result.errors, [])
+        # Evidence must NOT have been dropped
+        self.assertGreater(len(result.evidence), 0)
+        self.assertEqual(result.evidence[0].document_title, "Celery Documentation")
+        self.assertEqual(result.evidence[0].document_id, str(doc_celery.id))
+
+    def test_non_uuid_web_url_identifier_in_research_runtime(self) -> None:
+        """KB loop regression: Planner providing web URL as document_ids succeeds and retains URL provenance."""
+        from rag.ingestion import ingest_document
+
+        doc_ronaldo = ingest_document(
+            title="ronaldo",
+            content="Cristiano Ronaldo began his senior career with Sporting CP before signing with Manchester United.",
+            embedding_provider=self.embedding_provider,
+            source="https://en.wikipedia.org/wiki/Cristiano_Ronaldo",
+            metadata={
+                "url": "https://en.wikipedia.org/wiki/Cristiano_Ronaldo",
+                "canonical_url": "https://en.wikipedia.org/wiki/Cristiano_Ronaldo",
+            },
+        )
+
+        chunk_id = str(doc_ronaldo.chunks.first().id)
+        citation = make_citation(doc_ronaldo.title, chunk_id, url="https://en.wikipedia.org/wiki/Cristiano_Ronaldo")
+
+        # Planner outputs URL "https://en.wikipedia.org/wiki/Cristiano_Ronaldo"
+        llm_provider = E2EScriptedLLMProvider([
+            json.dumps({
+                "decision": "continue",
+                "query": "Sporting CP debut",
+                "document_ids": ["https://en.wikipedia.org/wiki/Cristiano_Ronaldo"],
+            }),
+            json.dumps({"decision": "finish"}),
+            f"Ronaldo debuted for Sporting CP before joining United {citation}.",
+        ])
+
+        runtime = create_research_runtime(
+            gateway=ModelGateway(provider=llm_provider),
+            embedding_provider=self.embedding_provider,
+            mode="knowledge_base",
+        )
+
+        result = runtime.run_research("What was Cristiano Ronaldo's early career before Manchester United?")
+
+        self.assertEqual(result.status, AgentStatus.COMPLETED)
+        self.assertEqual(result.errors, [])
+        self.assertGreater(len(result.evidence), 0)
+        first_ev = result.evidence[0]
+        self.assertEqual(first_ev.document_title, "ronaldo")
+        self.assertEqual(first_ev.url, "https://en.wikipedia.org/wiki/Cristiano_Ronaldo")
+
+    def test_unknown_identifier_in_research_runtime_does_not_raise_validation_error(self) -> None:
+        """KB loop regression: Planner providing unknown identifier produces empty results without crashing."""
+        llm_provider = E2EScriptedLLMProvider([
+            json.dumps({
+                "decision": "continue",
+                "query": "unknown topic",
+                "document_ids": ["completely_nonexistent_doc_title"],
+            }),
+            json.dumps({"decision": "finish"}),
+            "No evidence was found for the query.",
+        ])
+
+        runtime = create_research_runtime(
+            gateway=ModelGateway(provider=llm_provider),
+            embedding_provider=self.embedding_provider,
+            mode="knowledge_base",
+        )
+
+        result = runtime.run_research("Research unknown document topic")
+
+        self.assertEqual(result.status, AgentStatus.COMPLETED)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(len(result.evidence), 0)
+        self.assertFalse(result.has_evidence)
