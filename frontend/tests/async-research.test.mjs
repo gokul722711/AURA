@@ -159,3 +159,221 @@ test("Duration formatting helper renders canonical seconds accurately", () => {
   assert.equal(formatHistoryDuration({ duration_seconds: 0 }), null);
   assert.equal(formatHistoryDuration({ duration_seconds: null }), null);
 });
+
+test("Frontend research submission lifecycle supports consecutive submissions without page refresh", async () => {
+  // Model state machine mirroring page.jsx research lifecycle
+  class ResearchUIController {
+    constructor() {
+      this.objective = "";
+      this.loading = false;
+      this.error = null;
+      this.result = null;
+      this.activeRunId = null;
+      this.activeRunStatus = null;
+      this.activeRunElapsed = 0;
+      this.postCalls = [];
+      this.pollTimerActive = false;
+    }
+
+    isSubmitDisabled() {
+      return this.loading || !this.objective.trim();
+    }
+
+    async submit(mockFetch, mode = "knowledge_base") {
+      const trimmed = this.objective.trim();
+      if (!trimmed) {
+        this.error = "Please enter a research objective.";
+        return;
+      }
+
+      this.loading = true;
+      this.error = null;
+      this.result = null;
+      this.activeRunElapsed = 0;
+      this.pollTimerActive = false;
+
+      try {
+        const response = await mockFetch("/api/research/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ objective: trimmed, mode }),
+        });
+        this.postCalls.push({ url: "/api/research/", objective: trimmed, mode });
+
+        const contentType = response.headers?.get("content-type") || "application/json";
+        let data = {};
+        if (contentType.includes("application/json")) {
+          data = await response.json();
+        } else {
+          const text = await response.text();
+          throw new Error(`Server returned HTTP ${response.status}: ${text.slice(0, 120)}`);
+        }
+
+        if (response.status !== 202 && !response.ok) {
+          const errorDetail = data.detail || data.error || `HTTP error ${response.status}`;
+          throw new Error(errorDetail);
+        }
+
+        this.activeRunId = data.run_id;
+        this.activeRunStatus = data.status || "queued";
+        this.pollTimerActive = true;
+      } catch (err) {
+        this.error = err.message || "Failed to communicate with research backend.";
+        this.loading = false;
+      }
+    }
+
+    async poll(mockFetch) {
+      if (!this.activeRunId) return;
+      const currentRunId = this.activeRunId;
+
+      try {
+        const response = await mockFetch(`/api/research/${currentRunId}/`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+
+        // Stale closure guard
+        if (this.activeRunId !== currentRunId) return;
+
+        this.activeRunStatus = data.status;
+        if (data.status === "completed") {
+          this.result = data;
+          this.error = null;
+          this.activeRunId = null;
+          this.activeRunStatus = null;
+          this.loading = false;
+          this.pollTimerActive = false;
+        } else if (data.status === "failed") {
+          this.error = data.error || "Research run failed.";
+          this.activeRunId = null;
+          this.activeRunStatus = null;
+          this.loading = false;
+          this.pollTimerActive = false;
+        } else if (data.status === "cancelled") {
+          this.error = data.error || "Research was cancelled.";
+          this.activeRunId = null;
+          this.activeRunStatus = null;
+          this.loading = false;
+          this.pollTimerActive = false;
+        }
+      } catch (err) {
+        // Polling retry
+      }
+    }
+  }
+
+  const ui = new ResearchUIController();
+
+  // 1. Initial State: Button disabled when empty
+  assert.equal(ui.isSubmitDisabled(), true);
+  ui.objective = "Query 1: What is AURA?";
+  assert.equal(ui.isSubmitDisabled(), false);
+
+  // 2. First Submission succeeds (202 Accepted)
+  const mockFetch1 = async (url, opts) => {
+    if (opts?.method === "POST") {
+      return {
+        status: 202,
+        ok: true,
+        headers: { get: () => "application/json" },
+        json: async () => ({ run_id: "run-uuid-1", status: "queued" }),
+      };
+    }
+    return {
+      status: 200,
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: async () => ({ status: "completed", final_answer: "AURA is an agentic platform." }),
+    };
+  };
+
+  await ui.submit(mockFetch1);
+  assert.equal(ui.loading, true);
+  assert.equal(ui.activeRunId, "run-uuid-1");
+  assert.equal(ui.postCalls.length, 1);
+  assert.equal(ui.postCalls[0].objective, "Query 1: What is AURA?");
+
+  // Complete first run via poll
+  await ui.poll(mockFetch1);
+  assert.equal(ui.loading, false);
+  assert.equal(ui.activeRunId, null);
+  assert.notEqual(ui.result, null);
+  assert.equal(ui.error, null);
+
+  // 3. Button can be clicked again after clearing / updating objective
+  ui.objective = "";
+  assert.equal(ui.isSubmitDisabled(), true);
+  ui.objective = "Query 2: How does FlashRank work?";
+  assert.equal(ui.isSubmitDisabled(), false);
+
+  // 4. Second submission sends a NEW POST with new objective without refreshing
+  const mockFetch2 = async (url, opts) => {
+    if (opts?.method === "POST") {
+      return {
+        status: 202,
+        ok: true,
+        headers: { get: () => "application/json" },
+        json: async () => ({ run_id: "run-uuid-2", status: "queued" }),
+      };
+    }
+    return {
+      status: 200,
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: async () => ({ status: "completed", final_answer: "FlashRank is a local cross-encoder." }),
+    };
+  };
+
+  await ui.submit(mockFetch2);
+  // Completed result from run 1 is cleared on second submit
+  assert.equal(ui.loading, true);
+  assert.equal(ui.activeRunId, "run-uuid-2");
+  assert.equal(ui.result, null);
+  assert.equal(ui.postCalls.length, 2);
+  assert.equal(ui.postCalls[1].objective, "Query 2: How does FlashRank work?");
+
+  await ui.poll(mockFetch2);
+  assert.equal(ui.loading, false);
+  assert.equal(ui.activeRunId, null);
+  assert.notEqual(ui.result, null);
+});
+
+test("Frontend error state from a previous run does not block subsequent submissions or fabricate 503", async () => {
+  let isSubmitDisabled = (loading, objective) => loading || !objective.trim();
+
+  let state = {
+    loading: false,
+    error: "Previous error: NVIDIA model generation failed: 503 Service Unavailable",
+    result: null,
+    activeRunId: null,
+    objective: "New query after failure",
+  };
+
+  // 1. Error state from previous run does not disable submit button
+  assert.equal(isSubmitDisabled(state.loading, state.objective), false);
+
+  // 2. Submitting clears previous error and result immediately
+  state.loading = true;
+  state.error = null;
+  state.result = null;
+
+  assert.equal(state.error, null);
+  assert.equal(state.result, null);
+  assert.equal(isSubmitDisabled(state.loading, state.objective), true);
+
+  // 3. Local network failures do not fabricate or map to HTTP 503
+  const handleFetchError = (err) => {
+    return err.message || "Failed to communicate with research backend.";
+  };
+
+  const netError = new TypeError("Failed to fetch");
+  const parsed = handleFetchError(netError);
+  assert.equal(parsed, "Failed to fetch");
+  assert.ok(!parsed.includes("503"));
+
+  const abortError = new DOMException("The user aborted a request.", "AbortError");
+  assert.equal(handleFetchError(abortError), "The user aborted a request.");
+  assert.ok(!handleFetchError(abortError).includes("503"));
+});

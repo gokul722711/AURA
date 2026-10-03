@@ -99,6 +99,14 @@ export default function Home() {
     return { label: "TXT", icon: "📑", className: "badge-txt" };
   };
 
+  const formatScore = (score) => {
+    if (typeof score !== "number" || isNaN(score)) return "";
+    if (score === 0) return "0.000";
+    if (score >= 0.01) return score.toFixed(3);
+    if (score >= 0.0001) return score.toFixed(4);
+    return score.toFixed(6);
+  };
+
   // Document Interaction State
   const [expandedDocId, setExpandedDocId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
@@ -168,13 +176,17 @@ export default function Home() {
   useEffect(() => {
     if (!activeRunId) return;
 
+    let isCurrent = true;
+
     const pollStatus = async () => {
       try {
         const response = await fetch(`${getApiUrl("research")}${activeRunId}/`);
+        if (!isCurrent) return;
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         const data = await response.json();
+        if (!isCurrent) return;
 
         setActiveRunStatus(data.status);
         if (data.mode) {
@@ -183,6 +195,7 @@ export default function Home() {
 
         if (data.status === "completed") {
           setResult(data);
+          setError(null);
           setActiveRunId(null);
           setActiveRunStatus(null);
           setLoading(false);
@@ -202,13 +215,16 @@ export default function Home() {
           fetchHistory();
         }
       } catch (err) {
-        console.warn("Polling retry error:", err);
+        if (isCurrent) {
+          console.warn("Polling retry error:", err);
+        }
       }
     };
 
     pollTimerRef.current = setInterval(pollStatus, 2000);
 
     return () => {
+      isCurrent = false;
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     };
   }, [activeRunId]);
@@ -216,6 +232,11 @@ export default function Home() {
   // Submit Research Objective (Async POST -> 202)
   const handleResearchSubmit = async (e) => {
     e.preventDefault();
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+
     const trimmed = objective.trim();
     if (!trimmed) {
       setError("Please enter a research objective.");
@@ -908,7 +929,7 @@ export default function Home() {
                             </span>
                             {typeof ev.score === "number" && (
                               <span className="score-badge">
-                                Score: {ev.score.toFixed(3)}
+                                Score: {formatScore(ev.score)}
                               </span>
                             )}
                           </div>

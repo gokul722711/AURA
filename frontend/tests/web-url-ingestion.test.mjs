@@ -120,3 +120,22 @@ test("M12 Frontend: Evidence and Citation structures preserve URL attributes", (
   assert.equal(evidence.url, "https://example.com/quantum");
   assert.equal(evidence.domain, "example.com");
 });
+
+test("M13.1 Frontend: formatScore preserves precision for small non-zero scores and does not display literal 0.000", () => {
+  const formatScore = (score) => {
+    if (typeof score !== "number" || isNaN(score)) return "";
+    if (score === 0) return "0.000";
+    if (score >= 0.01) return score.toFixed(3);
+    if (score >= 0.0001) return score.toFixed(4);
+    return score.toFixed(6);
+  };
+
+  assert.equal(formatScore(0.997235), "0.997");
+  assert.equal(formatScore(0.147379), "0.147");
+  assert.equal(formatScore(0.000432), "0.0004");
+  assert.equal(formatScore(0.000033), "0.000033");
+  assert.equal(formatScore(0.000024), "0.000024");
+  assert.equal(formatScore(0), "0.000");
+  assert.equal(formatScore(null), "");
+  assert.equal(formatScore(undefined), "");
+});
