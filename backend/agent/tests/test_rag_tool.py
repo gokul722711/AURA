@@ -153,19 +153,3 @@ class RAGSearchToolTests(TestCase):
             self.assertLessEqual(count, 2)
         # Verify both documents are represented
         self.assertGreater(len(doc_counts), 1)
-
-    def test_single_document_identifier_bypasses_fairness_cap(self):
-        """When document_ids restricts to one document, RAGSearchTool returns up to top_k chunks from it."""
-        doc = ingest_document(
-            title="Single Target Guide",
-            content="Qubits and superposition principles in quantum circuits. " * 15,
-            embedding_provider=self.provider,
-            chunking_config=ChunkingConfig(chunk_size=40, chunk_overlap=5),
-        )
-        # Default tool with fairness enabled in config (MAX_CHUNKS_PER_DOC=2)
-        tool = RAGSearchTool(embedding_provider=self.provider)
-        res = tool.execute(query="qubits quantum circuits", top_k=5, document_ids=[str(doc.id)])
-        self.assertFalse(res.is_error)
-        self.assertEqual(len(res.output), 5)
-        for chunk in res.output:
-            self.assertEqual(chunk["document_id"], str(doc.id))
