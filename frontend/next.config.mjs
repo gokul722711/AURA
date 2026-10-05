@@ -2,6 +2,9 @@
 const nextConfig = {
   agentRules: false,
   skipTrailingSlashRedirect: true,
+  devIndicators: {
+    position: "bottom-right",
+  },
   async rewrites() {
     return [
       {

@@ -346,3 +346,38 @@ class AsyncResearchAPITests(TestCase):
         """POST /api/research/<id>/cancel/ returns 404 for unknown run."""
         res = self.client.post(f"/api/research/{uuid.uuid4()}/cancel/")
         self.assertEqual(res.status_code, 404)
+
+    def test_delete_individual_research_run(self) -> None:
+        """DELETE /api/research/<id>/ deletes the run from the database."""
+        run = ResearchRun.objects.create(objective="Run to delete")
+        res = self.client.delete(f"/api/research/{run.id}/")
+        self.assertEqual(res.status_code, 204)
+        self.assertFalse(ResearchRun.objects.filter(id=run.id).exists())
+
+        # Second delete returns 404
+        res_repeat = self.client.delete(f"/api/research/{run.id}/")
+        self.assertEqual(res_repeat.status_code, 404)
+
+    def test_delete_bulk_and_all_research_runs(self) -> None:
+        """DELETE /api/research/runs/ supports bulk delete via run_ids or delete all."""
+        run1 = ResearchRun.objects.create(objective="Run 1")
+        run2 = ResearchRun.objects.create(objective="Run 2")
+        run3 = ResearchRun.objects.create(objective="Run 3")
+
+        # Bulk delete run1 and run2
+        res_bulk = self.client.delete(
+            "/api/research/runs/",
+            data={"run_ids": [str(run1.id), str(run2.id)]},
+            format="json",
+        )
+        self.assertEqual(res_bulk.status_code, 200)
+        self.assertEqual(res_bulk.json()["deleted_count"], 2)
+        self.assertFalse(ResearchRun.objects.filter(id=run1.id).exists())
+        self.assertFalse(ResearchRun.objects.filter(id=run2.id).exists())
+        self.assertTrue(ResearchRun.objects.filter(id=run3.id).exists())
+
+        # Delete all remaining runs
+        res_all = self.client.delete("/api/research/runs/")
+        self.assertEqual(res_all.status_code, 200)
+        self.assertEqual(res_all.json()["deleted_count"], 1)
+        self.assertEqual(ResearchRun.objects.count(), 0)

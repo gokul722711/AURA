@@ -194,6 +194,26 @@ class ResearchDetailView(APIView):
 
         return Response(run.to_detail_dict(), status=status.HTTP_200_OK)
 
+    def delete(self, request: Request, run_id: str) -> Response:
+        """Delete an individual research run."""
+        parsed_id = _parse_run_uuid(run_id)
+        if parsed_id is None:
+            return Response(
+                {"error": "Research run not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            run = ResearchRun.objects.get(id=parsed_id)
+        except ResearchRun.DoesNotExist:
+            return Response(
+                {"error": "Research run not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        run.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class ResearchHistoryView(APIView):
     """List recent research runs ordered newest first.
@@ -209,6 +229,26 @@ class ResearchHistoryView(APIView):
         runs = ResearchRun.objects.order_by("-created_at")[:100]
         data = [run.to_summary_dict() for run in runs]
         return Response(data, status=status.HTTP_200_OK)
+
+    def delete(self, request: Request) -> Response:
+        """Delete multiple or all historical research runs."""
+        run_ids = request.data.get("run_ids") if isinstance(request.data, dict) else None
+        if run_ids is not None:
+            if not isinstance(run_ids, list):
+                return Response(
+                    {"error": "Field 'run_ids' must be a list of UUID strings."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            valid_ids = []
+            for rid in run_ids:
+                pid = _parse_run_uuid(str(rid))
+                if pid is not None:
+                    valid_ids.append(pid)
+            deleted_count, _ = ResearchRun.objects.filter(id__in=valid_ids).delete()
+            return Response({"deleted_count": deleted_count}, status=status.HTTP_200_OK)
+
+        deleted_count, _ = ResearchRun.objects.all().delete()
+        return Response({"deleted_count": deleted_count}, status=status.HTTP_200_OK)
 
 
 class ResearchCancelView(APIView):
