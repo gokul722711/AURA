@@ -54,8 +54,8 @@ class M13DispatchTests(TestCase):
         self.assertEqual(run.status, ResearchRun.STATUS_COMPLETED)
         self.assertEqual(run.result["metadata"]["pipeline"], "DeterministicKBPipeline")
 
-    def test_web_mode_dispatches_agent_runtime(self) -> None:
-        """When mode is web, execute_research_run invokes existing create_research_runtime."""
+    def test_web_mode_dispatches_deterministic_web_pipeline(self) -> None:
+        """When mode is web, execute_research_run invokes DeterministicWebPipeline."""
         run = ResearchRun.objects.create(
             objective="Latest research papers on transformers",
             mode=ResearchRun.MODE_WEB,
@@ -63,29 +63,44 @@ class M13DispatchTests(TestCase):
 
         mock_result = ResearchResult(
             objective="Latest research papers",
-            final_answer="Recent papers discuss transformers.",
-            evidence=[],
-            sources=[],
+            final_answer="Recent papers discuss transformers [Web, Chunk: w1].",
+            evidence=[
+                ResearchEvidence(
+                    chunk_id="w1",
+                    document_title="Web Paper",
+                    document_source="https://arxiv.org/abs/1706.03762",
+                    content="Transformers paper.",
+                )
+            ],
+            sources=[{"document_title": "Web Paper"}],
             queries=["transformers"],
-            iteration_count=2,
-            has_evidence=False,
+            iteration_count=1,
+            has_evidence=True,
             status=AgentStatus.COMPLETED,
             duration_ms=500.0,
+            metadata={"pipeline": "DeterministicWebPipeline"},
         )
 
-        mock_runtime = MagicMock()
-        mock_runtime.run_research.return_value = mock_result
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.return_value = mock_result
 
-        with patch("agent.tasks.create_deterministic_kb_pipeline") as mock_create_kb, patch(
-            "agent.tasks.create_research_runtime", return_value=mock_runtime
+        with patch("agent.tasks.create_deterministic_web_pipeline", return_value=mock_pipeline) as mock_create_web, patch(
+            "agent.tasks.create_deterministic_kb_pipeline"
+        ) as mock_create_kb, patch(
+            "agent.tasks.create_research_runtime"
         ) as mock_create_agent:
             res = execute_research_run(str(run.id))
             self.assertEqual(res["status"], "completed")
-            mock_create_agent.assert_called_once_with(mode=ResearchRun.MODE_WEB)
+            mock_create_web.assert_called_once()
             mock_create_kb.assert_not_called()
+            mock_create_agent.assert_not_called()
 
-    def test_web_knowledge_base_mode_dispatches_agent_runtime(self) -> None:
-        """When mode is web_knowledge_base, invokes create_research_runtime."""
+        run.refresh_from_db()
+        self.assertEqual(run.status, ResearchRun.STATUS_COMPLETED)
+        self.assertEqual(run.result["metadata"]["pipeline"], "DeterministicWebPipeline")
+
+    def test_web_knowledge_base_mode_dispatches_deterministic_hybrid_pipeline(self) -> None:
+        """When mode is web_knowledge_base, invokes DeterministicHybridPipeline."""
         run = ResearchRun.objects.create(
             objective="Hybrid research query",
             mode=ResearchRun.MODE_WEB_KNOWLEDGE_BASE,
@@ -93,26 +108,42 @@ class M13DispatchTests(TestCase):
 
         mock_result = ResearchResult(
             objective="Hybrid query",
-            final_answer="Answer.",
-            evidence=[],
-            sources=[],
-            queries=[],
+            final_answer="Hybrid answer [Web, Chunk: w1] [KB, Chunk: k1].",
+            evidence=[
+                ResearchEvidence(
+                    chunk_id="w1",
+                    document_title="Web",
+                    document_source="https://example.com",
+                    content="Web content",
+                )
+            ],
+            sources=[{"document_title": "Web"}],
+            queries=["Hybrid query"],
             iteration_count=1,
-            has_evidence=False,
+            has_evidence=True,
             status=AgentStatus.COMPLETED,
             duration_ms=100.0,
+            metadata={"pipeline": "DeterministicHybridPipeline"},
         )
 
-        mock_runtime = MagicMock()
-        mock_runtime.run_research.return_value = mock_result
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.return_value = mock_result
 
-        with patch("agent.tasks.create_deterministic_kb_pipeline") as mock_create_kb, patch(
-            "agent.tasks.create_research_runtime", return_value=mock_runtime
+        with patch("agent.tasks.create_deterministic_hybrid_pipeline", return_value=mock_pipeline) as mock_create_hybrid, patch(
+            "agent.tasks.create_deterministic_kb_pipeline"
+        ) as mock_create_kb, patch(
+            "agent.tasks.create_research_runtime"
         ) as mock_create_agent:
             res = execute_research_run(str(run.id))
             self.assertEqual(res["status"], "completed")
-            mock_create_agent.assert_called_once_with(mode=ResearchRun.MODE_WEB_KNOWLEDGE_BASE)
+            mock_create_hybrid.assert_called_once()
             mock_create_kb.assert_not_called()
+            mock_create_agent.assert_not_called()
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, ResearchRun.STATUS_COMPLETED)
+        self.assertEqual(run.result["metadata"]["pipeline"], "DeterministicHybridPipeline")
+
 
     def test_model_knowledge_mode_dispatches_agent_runtime(self) -> None:
         """When mode is model_knowledge, invokes create_research_runtime."""

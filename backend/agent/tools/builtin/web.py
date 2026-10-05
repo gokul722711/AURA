@@ -14,6 +14,8 @@ from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 import urllib.request
 
+import httpx
+
 from agent.security import sanitize_data, sanitize_text
 from agent.tools.base import Tool, ToolResult
 
@@ -398,13 +400,187 @@ class DuckDuckGoWebSearchProvider(WebSearchProvider):
         return self.parse_html_results(html_content, query=clean_query, top_k=top_k)
 
 
+
+class SearXNGWebSearchProvider(WebSearchProvider):
+    """Production web search provider using SearXNG JSON search API (M14)."""
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        timeout: float = 10.0,
+        engines: list[str] | None = None,
+        categories: list[str] | None = None,
+        client: Any = None,
+    ) -> None:
+        if base_url is None:
+            base_url = os.environ.get("AI_SEARXNG_URL", "http://localhost:8080")
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.engines = engines
+        self.categories = categories
+        self.client = client
+
+    @staticmethod
+    def parse_json_results(
+        data: dict[str, Any] | str,
+        query: str = "",
+        top_k: int = 5,
+    ) -> list[WebSearchResult]:
+        """Parse SearXNG JSON search response into structured WebSearchResults.
+
+        Deduplicates results by canonical URL, validates URLs, and preserves metadata.
+        """
+        if isinstance(data, str):
+            clean_str = data.strip()
+            if not clean_str:
+                return []
+            try:
+                payload = json.loads(clean_str)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"SearXNG returned malformed non-JSON response: {sanitize_text(str(exc))}"
+                ) from exc
+        elif isinstance(data, dict):
+            payload = data
+        else:
+            raise RuntimeError("SearXNG response must be a JSON object or string.")
+
+        if not isinstance(payload, dict):
+            raise RuntimeError("SearXNG response must be a JSON object.")
+
+        raw_results = payload.get("results")
+        if raw_results is None or not isinstance(raw_results, list):
+            raise RuntimeError("SearXNG response missing 'results' list.")
+
+        from rag.web.security import canonicalize_url
+
+        results: list[WebSearchResult] = []
+        seen_urls: set[str] = set()
+
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            raw_url = item.get("url")
+            if not raw_url or not isinstance(raw_url, str):
+                continue
+
+            raw_url = raw_url.strip()
+            if not validate_web_url(raw_url):
+                continue
+
+            try:
+                canonical = canonicalize_url(raw_url)
+            except Exception:
+                canonical = raw_url.rstrip("/")
+
+            if canonical in seen_urls:
+                continue
+            seen_urls.add(canonical)
+
+            title = str(item.get("title") or "").strip()
+            snippet = str(item.get("content") or "").strip()
+
+            parsed = urlparse(raw_url)
+            domain = (parsed.netloc or "").lower()
+            if not title:
+                title = domain or "Web Source"
+
+            item_metadata: dict[str, Any] = {
+                "source": "searxng",
+                "engine": item.get("engine", ""),
+                "engines": item.get("engines", []),
+                "query": query,
+            }
+            if item.get("score") is not None:
+                item_metadata["score"] = item.get("score")
+            if item.get("category"):
+                item_metadata["category"] = item.get("category")
+
+            results.append(
+                WebSearchResult(
+                    title=title,
+                    url=raw_url,
+                    snippet=snippet,
+                    domain=domain,
+                    metadata=item_metadata,
+                )
+            )
+            if len(results) >= top_k:
+                break
+
+        return results
+
+    def search(self, query: str, top_k: int = 5) -> list[WebSearchResult]:
+        """Execute search against SearXNG and return structured WebSearchResults."""
+        clean_query = query.strip()
+        if not clean_query:
+            return []
+
+        endpoint = f"{self.base_url}/search"
+        params: dict[str, str] = {
+            "q": clean_query,
+            "format": "json",
+        }
+        if self.categories:
+            params["categories"] = ",".join(self.categories)
+        if self.engines:
+            params["engines"] = ",".join(self.engines)
+
+        try:
+            if self.client is not None:
+                resp = self.client.get(endpoint, params=params)
+                status_code = resp.status_code
+                content_text = resp.text
+            else:
+                with httpx.Client(timeout=self.timeout) as client:
+                    resp = client.get(endpoint, params=params)
+                    status_code = resp.status_code
+                    content_text = resp.text
+        except httpx.TimeoutException as exc:
+            safe_err = sanitize_text(str(exc))
+            logger.warning("SearXNG search request timed out for '%s': %s", clean_query, exc)
+            raise RuntimeError(f"SearXNG search timed out: {safe_err}") from exc
+        except Exception as exc:
+            safe_err = sanitize_text(str(exc))
+            logger.warning("SearXNG search request failed for '%s': %s", clean_query, exc)
+            raise RuntimeError(f"SearXNG connection error: {safe_err}") from exc
+
+        if status_code != 200:
+            safe_msg = sanitize_text(content_text[:200])
+            raise RuntimeError(f"SearXNG search failed with status {status_code}: {safe_msg}")
+
+        return self.parse_json_results(content_text, query=clean_query, top_k=top_k)
+
+
 def get_default_web_search_provider() -> WebSearchProvider:
     """Instantiate the default WebSearchProvider based on application settings/environment."""
-    provider_name = os.environ.get("AI_WEB_SEARCH_PROVIDER", "mock").strip().lower()
-    if provider_name == "duckduckgo":
+    provider_name = os.environ.get("AI_WEB_SEARCH_PROVIDER", "").strip().lower()
+    if not provider_name:
+        try:
+            from django.conf import settings
+
+            web_conf = getattr(settings, "AI_WEB_SEARCH", {})
+            provider_name = web_conf.get("PROVIDER", "mock").strip().lower()
+        except Exception:
+            provider_name = "mock"
+
+    if provider_name == "searxng":
+        base_url = os.environ.get("AI_SEARXNG_URL")
+        if not base_url:
+            try:
+                from django.conf import settings
+
+                web_conf = getattr(settings, "AI_WEB_SEARCH", {})
+                base_url = web_conf.get("SEARXNG_URL", "http://localhost:8080")
+            except Exception:
+                base_url = "http://localhost:8080"
+        timeout = float(os.environ.get("AI_WEB_SEARCH_TIMEOUT", "10.0"))
+        return SearXNGWebSearchProvider(base_url=base_url, timeout=timeout)
+    elif provider_name == "duckduckgo":
         timeout = float(os.environ.get("AI_WEB_SEARCH_TIMEOUT", "10.0"))
         return DuckDuckGoWebSearchProvider(timeout=timeout)
     return MockWebSearchProvider()
+
 
 
 class WebSearchTool(Tool):

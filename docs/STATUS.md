@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-**M13 — Deterministic Knowledge Base Fast Path: COMPLETE**
+**M14 — Real Web Research with SearXNG: COMPLETE**
 
 ---
 
@@ -559,6 +559,61 @@ Verified:
 * Model migrations check (`makemigrations --check`) passes with zero changes
 * `git diff --check` passes with zero issues
 
+### M14 — Real Web Research with SearXNG
+
+Replaced placeholder and mock web research with a deterministic, production-ready web research pipeline powered by a local, open-source SearXNG instance. Implemented deterministic web fast-path and unified hybrid (web + knowledge-base) research architectures eliminating multi-step planner loops and guaranteeing exactly ONE logical ModelGateway generation call per research run.
+
+Implements:
+
+* **SearXNG Local Deployment (`deploy/searxng/`)**:
+  * Podman-compatible container configuration running official `docker.io/searxng/searxng:latest`.
+  * Minimal `settings.yml` enabling JSON API format output, disabling limiter for local dev, and enabling key general engines (Google, DuckDuckGo, Wikipedia, GitHub) without API keys.
+  * Helper startup script `deploy/searxng/start.sh` and deployment documentation `deploy/searxng/README.md`.
+* **SearXNG Provider Abstraction (`backend/agent/tools/builtin/web.py`)**:
+  * `SearXNGWebSearchProvider` implementing `WebSearchProvider` ABC.
+  * Connects over HTTP to SearXNG JSON search endpoint (`/search?q=...&format=json`).
+  * Normalizes and parses search results into canonical `WebSearchResult` contracts preserving title, URL, content snippets, domain, engines, and scores.
+  * Strict URL canonicalization and deduplication preventing duplicate resource fetching.
+  * Sanitized exception handling for timeouts, HTTP failures, and connection errors without credential leakage.
+  * Dynamic provider resolution via `get_default_web_search_provider()` driven by `AI_WEB_SEARCH_PROVIDER=searxng` and `AI_SEARXNG_URL`.
+* **Deterministic Web Research Pipeline (`backend/rag/fast_web.py`)**:
+  * `DeterministicWebPipeline` executing user query → query normalization → SearXNG search → URL deduplication → SSRF-safe page fetching (`HTTPXWebFetcher`) → Trafilatura main text extraction (`WebPageExtractor`) → normalization → deterministic chunking → FlashRank cross-encoder reranking → relevance threshold filtering (`RERANKER_MIN_SCORE`) → bounded context budget (`select_context_chunks`) → exactly ONE `ModelGateway.generate()` synthesis call → canonical `ResearchResult`.
+  * 0 planner calls, 0 structured-output iterations, 0 agent tool loops, and 1 generation call.
+  * Graceful individual page failure handling: failed URLs (403, timeout, SSRF) are skipped while successful pages proceed.
+  * Prompt-injection defense: strict demarcation of untrusted external web evidence in system prompts.
+  * Preserves provenance and generates canonical citations `[Title, URL, Chunk: ID]`.
+* **Combined Web + Knowledge Base Pipeline (`DeterministicHybridPipeline`)**:
+  * Fair candidate accumulation: bounds candidate retrieval from both internal KB (dense + lexical + RRF) and live Web (SearXNG + fetch + extract).
+  * Web search/fetch failures do not degrade or destroy valid KB evidence.
+  * Unified FlashRank cross-encoder reranking over combined candidate set.
+  * Exactly ONE `ModelGateway.generate()` synthesis call synthesizing multi-source grounded answers.
+  * Canonical multi-source citation attribution distinguishing web URLs from internal documents.
+* **Celery Mode-Specific Task Dispatch (`backend/agent/tasks.py`)**:
+  * `mode="web"` dispatches to `create_deterministic_web_pipeline()`.
+  * `mode="web_knowledge_base"` dispatches to `create_deterministic_hybrid_pipeline()`.
+  * `mode="knowledge_base"` remains on `create_deterministic_kb_pipeline()`.
+  * `mode="model_knowledge"` remains on direct model path.
+* **Configuration & Environment**:
+  * Externalized settings via `settings.AI_WEB_SEARCH` (`PROVIDER`, `SEARXNG_URL`, `TIMEOUT`, `SEARCH_TOP_K`, `MAX_FETCH_PAGES`, `MAX_EXTRACTED_CHARS`).
+  * Updated `.env.example` with standard defaults.
+* **Automated Test Suite**:
+  * 12 provider tests in `backend/agent/tests/test_searxng_provider.py` covering JSON parsing, fallbacks, malformed responses, timeouts, HTTP errors, empty results, deduplication, and limits.
+  * 10 pipeline tests in `backend/rag/tests/test_fast_web.py` covering end-to-end web pipeline, single generate call constraint, individual page failures, all-pages failing, relevance filtering, top-k bounds, citation integrity, hybrid coexistence, KB resilience against web failures, and planner non-invocation.
+  * 4 mode dispatch tests in `backend/agent/tests/test_m13_dispatch.py`.
+  * 2 end-to-end API integration tests in `backend/agent/tests/test_e2e_research_m14.py`.
+
+Verified:
+
+* 679/679 backend tests pass (`python manage.py test`) (100% offline, deterministic)
+* 30/30 frontend tests pass (`npm test`)
+* Frontend Next.js production build passes (`npm run build`)
+* Django system checks pass (`python manage.py check`)
+* Model migrations check (`makemigrations --check`) passes with zero changes
+* `git diff --check` passes with zero issues
+* Verified SearXNG local development container (`aura-searxng`) on port 8080.
+* Verified live acceptance test for Web Research mode (`"What is the latest stable version of Python, and when was it released?"`) with real fetched web sources and citations.
+* Verified live acceptance test for Web + Knowledge Base mode with multi-source evidence and citations.
+
 ---
 
 ## Development Roadmap
@@ -578,8 +633,9 @@ M10 Research Modes + Web Research       COMPLETE
 M11 Knowledge Ingestion + Adv Retrieval COMPLETE
 M12 URL & Web-Page Knowledge Ingestion  COMPLETE
 M13 Deterministic KB Fast Path          COMPLETE
-M14 Local/Open Model Expansion
-M15 Deployment
+M14 Real Web Research with SearXNG      COMPLETE
+M15 Local/Open Model Expansion
+M16 Deployment
 ```
 
 

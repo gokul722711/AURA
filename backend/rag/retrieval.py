@@ -89,7 +89,7 @@ class RetrievalResult:
     start_offset: int
     end_offset: int
     chunk_metadata: dict
-    chunk: DocumentChunk
+    chunk: DocumentChunk | None = None
 
 
 def _get_retrieval_config() -> RetrievalConfig:
@@ -256,6 +256,34 @@ def retrieve_lexical_chunks(
         if config.document_ids is not None:
             clean_doc_ids = [str(did).strip() for did in config.document_ids if str(did).strip()]
             queryset = queryset.filter(document_id__in=clean_doc_ids)
+
+        if not queryset.exists():
+            import re
+            words = re.findall(r"\b[a-zA-Z0-9_\-\.]{3,}\b", query)
+            stopwords = {
+                "what", "which", "when", "where", "who", "whom", "this", "that", "these", "those",
+                "from", "with", "about", "into", "through", "during", "before", "after", "above",
+                "below", "under", "again", "further", "then", "once", "here", "there", "why", "how",
+                "all", "any", "both", "each", "few", "more", "most", "other", "some", "such", "no",
+                "nor", "not", "only", "own", "same", "so", "than", "too", "very", "can", "will",
+                "just", "should", "now", "according", "knowledge", "base"
+            }
+            meaningful_words = [w for w in words if w.lower() not in stopwords]
+            if meaningful_words:
+                or_query = None
+                for kw in meaningful_words:
+                    sq = SearchQuery(kw, config="english")
+                    or_query = sq if or_query is None else or_query | sq
+                if or_query:
+                    queryset = (
+                        DocumentChunk.objects.filter(document__status="ready")
+                        .select_related("document")
+                        .annotate(search=search_vector, rank=SearchRank(search_vector, or_query))
+                        .filter(search=or_query)
+                    )
+                    if config.document_ids is not None:
+                        clean_doc_ids = [str(did).strip() for did in config.document_ids if str(did).strip()]
+                        queryset = queryset.filter(document_id__in=clean_doc_ids)
 
         # Deterministic ordering: rank DESC (best match first), then pk ASC for tie-breaking
         queryset = queryset.order_by("-rank", "pk")

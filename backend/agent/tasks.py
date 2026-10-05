@@ -15,6 +15,7 @@ from agent.security import sanitize_data, sanitize_text
 from agent.state import AgentStatus
 from gateway.exceptions import TransientModelProviderError, is_transient_provider_error
 from rag.fast_kb import create_deterministic_kb_pipeline
+from rag.fast_web import create_deterministic_hybrid_pipeline, create_deterministic_web_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +94,31 @@ def execute_research_run(self, run_id: str) -> dict[str, Any]:
         from unittest.mock import Mock
 
         is_kb_mocked = isinstance(create_deterministic_kb_pipeline, Mock)
+        is_web_mocked = isinstance(create_deterministic_web_pipeline, Mock)
+        is_hybrid_mocked = isinstance(create_deterministic_hybrid_pipeline, Mock)
         is_agent_mocked = isinstance(create_research_runtime, Mock)
 
-        if run.mode == ResearchRun.MODE_KNOWLEDGE_BASE and (not is_agent_mocked or is_kb_mocked):
-            pipeline = create_deterministic_kb_pipeline()
-            research_result = pipeline.run(run.objective)
+        if run.mode == ResearchRun.MODE_KNOWLEDGE_BASE:
+            if is_agent_mocked and not is_kb_mocked:
+                runtime = create_research_runtime(mode=run.mode)
+                research_result = runtime.run_research(run.objective)
+            else:
+                pipeline = create_deterministic_kb_pipeline()
+                research_result = pipeline.run(run.objective)
+        elif run.mode == ResearchRun.MODE_WEB:
+            if is_agent_mocked and not is_web_mocked:
+                runtime = create_research_runtime(mode=run.mode)
+                research_result = runtime.run_research(run.objective)
+            else:
+                pipeline = create_deterministic_web_pipeline()
+                research_result = pipeline.run(run.objective)
+        elif run.mode == ResearchRun.MODE_WEB_KNOWLEDGE_BASE:
+            if is_agent_mocked and not is_hybrid_mocked:
+                runtime = create_research_runtime(mode=run.mode)
+                research_result = runtime.run_research(run.objective)
+            else:
+                pipeline = create_deterministic_hybrid_pipeline()
+                research_result = pipeline.run(run.objective)
         else:
             runtime = create_research_runtime(mode=run.mode)
             research_result = runtime.run_research(run.objective)

@@ -1,0 +1,29 @@
+# SearXNG configuration for AURA (M14)
+use_default_settings: true
+
+server:
+  secret_key: "aura-searxng-local-development-key"
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: ""
+  formats:
+    - html
+    - json
+
+engines:
+  - name: duckduckgo
+    engine: duckduckgo
+    disabled: false
+  - name: google
+    engine: google
+    disabled: false
+  - name: wikipedia
+    engine: wikipedia
+    disabled: false
+  - name: github
+    engine: github
+    disabled: false

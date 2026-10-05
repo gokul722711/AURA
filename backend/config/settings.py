@@ -232,3 +232,16 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = os.environ.get("CELERY_TASK_ALWAYS_EAGER", "False").lower() in ("true", "1", "yes")
 CELERY_TASK_EAGER_PROPAGATES = True
+
+# ---------------------------------------------------------------------------
+# Web Search Configuration (M14)
+# ---------------------------------------------------------------------------
+
+AI_WEB_SEARCH = {
+    "PROVIDER": os.environ.get("AI_WEB_SEARCH_PROVIDER", "searxng").strip().lower(),
+    "SEARXNG_URL": os.environ.get("AI_SEARXNG_URL", "http://localhost:8080").strip(),
+    "TIMEOUT": float(os.environ.get("AI_WEB_SEARCH_TIMEOUT", "10.0")),
+    "SEARCH_TOP_K": int(os.environ.get("AI_WEB_SEARCH_TOP_K", "10")),
+    "MAX_FETCH_PAGES": int(os.environ.get("AI_WEB_SEARCH_MAX_FETCH_PAGES", "5")),
+    "MAX_EXTRACTED_CHARS": int(os.environ.get("AI_WEB_SEARCH_MAX_EXTRACTED_CHARS", "100000")),
+}
