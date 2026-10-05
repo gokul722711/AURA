@@ -70,6 +70,26 @@ class ResearchRun(models.Model):
         default="",
         help_text="Sanitized error description if status is failed or cancelled.",
     )
+    model_profile = models.ForeignKey(
+        "gateway.ModelProfile",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="research_runs",
+        help_text="ModelProfile configured for this research run.",
+    )
+    model_name = models.CharField(
+        max_length=256,
+        blank=True,
+        default="",
+        help_text="Snapshot of model identifier used for execution.",
+    )
+    provider_name = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Snapshot of provider type used for execution.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -117,6 +137,9 @@ class ResearchRun(models.Model):
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "duration_seconds": self.duration_seconds,
             "duration_ms": self.duration_ms,
+            "model_profile_id": str(self.model_profile_id) if self.model_profile_id else None,
+            "model_name": self.model_name or (self.result.get("metadata", {}).get("model", "") if isinstance(self.result, dict) else ""),
+            "provider_name": self.provider_name or (self.result.get("metadata", {}).get("provider", "") if isinstance(self.result, dict) else ""),
             "is_grounded": is_grounded,
             "has_evidence": has_evidence,
             "citation_count": citation_count,
@@ -135,6 +158,9 @@ class ResearchRun(models.Model):
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "duration_seconds": self.duration_seconds,
             "duration_ms": self.duration_ms,
+            "model_profile_id": str(self.model_profile_id) if self.model_profile_id else None,
+            "model_name": self.model_name or (self.result.get("metadata", {}).get("model", "") if isinstance(self.result, dict) else ""),
+            "provider_name": self.provider_name or (self.result.get("metadata", {}).get("provider", "") if isinstance(self.result, dict) else ""),
         }
 
         if self.status == self.STATUS_COMPLETED and isinstance(self.result, dict):

@@ -64,7 +64,9 @@ class E2EResearchM14Tests(TestCase):
         )
         mock_reranker = MockReranker(scorer=lambda q, c: 0.9, min_score=0.1)
 
-        with patch("rag.fast_web.get_gateway", return_value=mock_gateway), patch(
+        with patch("gateway.gateway.get_gateway", return_value=mock_gateway), patch(
+            "rag.fast_web.get_gateway", return_value=mock_gateway
+        ), patch(
             "rag.fast_web.get_default_web_search_provider", return_value=mock_search_provider
         ), patch("rag.fast_web.HTTPXWebFetcher", return_value=mock_fetcher), patch(
             "rag.fast_web._get_default_reranker", return_value=mock_reranker
@@ -146,7 +148,9 @@ class E2EResearchM14Tests(TestCase):
         mock_lexical.return_value = []
         mock_reranker = MockReranker(scorer=lambda q, c: 0.9, min_score=0.1)
 
-        with patch("rag.fast_web.get_gateway", return_value=mock_gateway), patch(
+        with patch("gateway.gateway.get_gateway", return_value=mock_gateway), patch(
+            "rag.fast_web.get_gateway", return_value=mock_gateway
+        ), patch(
             "rag.fast_web.get_default_web_search_provider", return_value=mock_search_provider
         ), patch("rag.fast_web.HTTPXWebFetcher", return_value=mock_fetcher), patch(
             "rag.fast_web._get_default_reranker", return_value=mock_reranker

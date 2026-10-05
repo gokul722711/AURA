@@ -87,11 +87,46 @@ class ResearchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Validate and resolve ModelProfile (M15)
+        profile = None
+        requested_profile_id = data.get("model_profile_id")
+        if requested_profile_id:
+            profile_uuid = _parse_run_uuid(requested_profile_id)
+            if profile_uuid is None:
+                return Response(
+                    {"error": f"Invalid model_profile_id format: '{requested_profile_id}'."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            from gateway.models import ModelProfile
+
+            profile = ModelProfile.objects.filter(id=profile_uuid).first()
+            if profile is None:
+                return Response(
+                    {"error": f"Model profile '{requested_profile_id}' not found."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            from gateway.models import get_active_model_profile
+
+            profile = get_active_model_profile()
+
+        if profile is None:
+            return Response(
+                {
+                    "error": "No research model configured. Configure a model profile before starting research.",
+                    "code": "NO_MODEL_CONFIGURED",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # 1. Create persistent ResearchRun
         run = ResearchRun.objects.create(
             objective=trimmed_objective,
             mode=mode,
             status=ResearchRun.STATUS_QUEUED,
+            model_profile=profile,
+            model_name=profile.model,
+            provider_name=profile.provider,
         )
 
         # 2. Enqueue Celery task
@@ -123,6 +158,9 @@ class ResearchView(APIView):
             "status": run.status,
             "mode": run.mode,
             "objective": run.objective,
+            "model_profile_id": str(profile.id),
+            "model_name": profile.model,
+            "provider_name": profile.provider,
             "created_at": run.created_at.isoformat() if run.created_at else None,
         }
         return Response(sanitize_data(response_data), status=status.HTTP_202_ACCEPTED)

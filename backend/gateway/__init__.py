@@ -9,6 +9,7 @@ from gateway.exceptions import (
     GatewayError,
     GenerationError,
     InvalidRequestError,
+    NoModelConfiguredError,
     ProviderConfigurationError,
     ProviderUnavailableError,
     UnsupportedCapabilityError,
@@ -64,5 +65,6 @@ __all__ = [
     "UnsupportedCapabilityError",
     "InvalidRequestError",
     "ProviderConfigurationError",
+    "NoModelConfiguredError",
     "GenerationError",
 ]

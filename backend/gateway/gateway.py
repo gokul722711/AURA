@@ -128,7 +128,63 @@ class ModelGateway:
             sanitized = _sanitize_error_message(str(exc))
             raise GenerationError(f"Structured output generation failed: {sanitized}") from exc
 
+    @classmethod
+    def from_profile(cls, profile: Any) -> "ModelGateway":
+        """Instantiate a ModelGateway configured from a ModelProfile."""
+        extra = dict(profile.extra_config or {})
+        if profile.temperature is not None:
+            extra["temperature"] = profile.temperature
+        if profile.max_tokens is not None:
+            extra["max_tokens"] = profile.max_tokens
 
-def get_gateway() -> ModelGateway:
-    """Return a ModelGateway configured from application settings."""
-    return ModelGateway()
+        config = GatewayConfig(
+            provider=profile.provider,
+            model=profile.model,
+            endpoint=profile.endpoint,
+            timeout=profile.timeout,
+            api_key=profile.api_key,
+            extra_config=extra,
+        )
+        return cls(config=config)
+
+
+def get_gateway(
+    profile: Any | None = None,
+    profile_id: str | None = None,
+    allow_fallback: bool = True,
+) -> ModelGateway:
+    """Return a ModelGateway configured from an explicit profile, profile ID, or active profile."""
+    if profile is not None:
+        return ModelGateway.from_profile(profile)
+
+    if profile_id is not None:
+        from gateway.exceptions import ProviderConfigurationError
+        from gateway.models import ModelProfile
+
+        try:
+            target_profile = ModelProfile.objects.get(id=profile_id)
+            return ModelGateway.from_profile(target_profile)
+        except ModelProfile.DoesNotExist:
+            raise ProviderConfigurationError(f"ModelProfile with id '{profile_id}' does not exist.")
+
+    # Try resolving active profile from database if Django apps are ready
+    try:
+        from django.apps import apps
+
+        if apps.ready:
+            from gateway.models import get_active_model_profile
+
+            active_profile = get_active_model_profile()
+            if active_profile is not None:
+                return ModelGateway.from_profile(active_profile)
+    except Exception:
+        pass
+
+    if allow_fallback:
+        return ModelGateway()
+
+    from gateway.exceptions import NoModelConfiguredError
+
+    raise NoModelConfiguredError(
+        "No research model configured. Configure a model profile before starting research."
+    )

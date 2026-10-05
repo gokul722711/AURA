@@ -112,11 +112,235 @@ export default function Home() {
   const [deletingId, setDeletingId] = useState(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
 
+  // Model Profiles State (M15)
+  const [modelProfiles, setModelProfiles] = useState([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState(null);
+  const [selectedModelProfileId, setSelectedModelProfileId] = useState("");
+  const [showModelModal, setShowModelModal] = useState(false);
+  const [editingProfileId, setEditingProfileId] = useState(null);
+  const [testResults, setTestResults] = useState({});
+
+  // Model Form State
+  const [formName, setFormName] = useState("");
+  const [formProvider, setFormProvider] = useState("nvidia");
+  const [formEndpoint, setFormEndpoint] = useState("https://integrate.api.nvidia.com/v1");
+  const [formModel, setFormModel] = useState("nvidia/nemotron-3-ultra-550b-a55b");
+  const [formApiKey, setFormApiKey] = useState("");
+  const [formTimeout, setFormTimeout] = useState("30");
+  const [formTemperature, setFormTemperature] = useState("");
+  const [formMaxTokens, setFormMaxTokens] = useState("");
+  const [formIsActive, setFormIsActive] = useState(false);
+  const [formError, setFormError] = useState(null);
+  const [formSaving, setFormSaving] = useState(false);
+
+  const activeProfile = modelProfiles.find((p) => p.is_active) || null;
+
+  const handleProviderPresetChange = (provider) => {
+    setFormProvider(provider);
+    if (provider === "nvidia") {
+      setFormEndpoint("https://integrate.api.nvidia.com/v1");
+      setFormModel("nvidia/nemotron-3-ultra-550b-a55b");
+    } else if (provider === "ollama") {
+      setFormEndpoint("http://localhost:11434");
+      setFormModel("llama3.1:8b");
+    } else if (provider === "openai_compatible") {
+      setFormEndpoint("http://localhost:8000/v1");
+      setFormModel("Qwen/Qwen2.5-7B");
+    } else if (provider === "mock") {
+      setFormEndpoint("");
+      setFormModel("mock-model");
+    }
+  };
+
+  const openCreateModelModal = () => {
+    setEditingProfileId(null);
+    setFormName("");
+    setFormProvider("nvidia");
+    setFormEndpoint("https://integrate.api.nvidia.com/v1");
+    setFormModel("nvidia/nemotron-3-ultra-550b-a55b");
+    setFormApiKey("");
+    setFormTimeout("30");
+    setFormTemperature("");
+    setFormMaxTokens("");
+    setFormIsActive(modelProfiles.length === 0);
+    setFormError(null);
+    setShowModelModal(true);
+  };
+
+  const openEditModelModal = (profile) => {
+    setEditingProfileId(profile.id);
+    setFormName(profile.name || "");
+    setFormProvider(profile.provider || "nvidia");
+    setFormEndpoint(profile.endpoint || "");
+    setFormModel(profile.model || "");
+    setFormApiKey("");
+    setFormTimeout(profile.timeout != null ? String(profile.timeout) : "30");
+    setFormTemperature(profile.temperature != null ? String(profile.temperature) : "");
+    setFormMaxTokens(profile.max_tokens != null ? String(profile.max_tokens) : "");
+    setFormIsActive(Boolean(profile.is_active));
+    setFormError(null);
+    setShowModelModal(true);
+  };
+
+  const fetchModelProfiles = async () => {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const response = await fetch(getApiUrl("models"));
+      if (!response.ok) {
+        throw new Error(`Failed to load models (HTTP ${response.status})`);
+      }
+      const data = await response.json();
+      const list = Array.isArray(data) ? data : [];
+      setModelProfiles(list);
+      const active = list.find((p) => p.is_active);
+      if (active && (!selectedModelProfileId || !list.some((p) => p.id === selectedModelProfileId))) {
+        setSelectedModelProfileId(active.id);
+      }
+    } catch (err) {
+      setModelsError(err.message || "Failed to load model profiles.");
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+
+  const handleActivateProfile = async (id) => {
+    try {
+      const resp = await fetch(`${getApiUrl("models")}${id}/activate/`, { method: "POST" });
+      if (resp.ok) {
+        await fetchModelProfiles();
+        setSelectedModelProfileId(id);
+      }
+    } catch (err) {
+      console.error("Failed to activate profile:", err);
+    }
+  };
+
+  const handleDeleteProfile = async (id) => {
+    if (!confirm("Are you sure you want to delete this model profile?")) return;
+    try {
+      const resp = await fetch(`${getApiUrl("models")}${id}/`, { method: "DELETE" });
+      if (resp.ok) {
+        await fetchModelProfiles();
+        if (selectedModelProfileId === id) {
+          setSelectedModelProfileId("");
+        }
+      }
+    } catch (err) {
+      console.error("Failed to delete profile:", err);
+    }
+  };
+
+  const handleTestProfile = async (id) => {
+    setTestResults((prev) => ({ ...prev, [id]: { loading: true } }));
+    try {
+      const resp = await fetch(`${getApiUrl("models")}${id}/test/`, { method: "POST" });
+      const data = await resp.json();
+      setTestResults((prev) => ({
+        ...prev,
+        [id]: {
+          loading: false,
+          success: Boolean(data.success),
+          message: data.message,
+          error: data.error,
+          latency_ms: data.latency_ms,
+        },
+      }));
+    } catch (err) {
+      setTestResults((prev) => ({
+        ...prev,
+        [id]: { loading: false, success: false, error: err.message },
+      }));
+    }
+  };
+
+  const handleTestDraftProfile = async () => {
+    setTestResults((prev) => ({ ...prev, draft: { loading: true } }));
+    try {
+      const payload = {
+        provider: formProvider,
+        model: formModel,
+        endpoint: formEndpoint,
+        api_key: formApiKey,
+        timeout: formTimeout ? parseFloat(formTimeout) : 15.0,
+      };
+      const resp = await fetch(getApiUrl("models/test"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      setTestResults((prev) => ({
+        ...prev,
+        draft: {
+          loading: false,
+          success: Boolean(data.success),
+          message: data.message,
+          error: data.error,
+          latency_ms: data.latency_ms,
+        },
+      }));
+    } catch (err) {
+      setTestResults((prev) => ({
+        ...prev,
+        draft: { loading: false, success: false, error: err.message },
+      }));
+    }
+  };
+
+  const handleSaveProfile = async (e) => {
+    e.preventDefault();
+    setFormError(null);
+    setFormSaving(true);
+    try {
+      const payload = {
+        name: formName.trim(),
+        provider: formProvider,
+        model: formModel.trim(),
+        endpoint: formEndpoint.trim(),
+        timeout: formTimeout ? parseFloat(formTimeout) : 30.0,
+        is_active: formIsActive,
+      };
+      if (formApiKey.trim()) {
+        payload.api_key = formApiKey.trim();
+      }
+      if (formTemperature !== "") {
+        payload.temperature = parseFloat(formTemperature);
+      }
+      if (formMaxTokens !== "") {
+        payload.max_tokens = parseInt(formMaxTokens, 10);
+      }
+
+      const url = editingProfileId ? `${getApiUrl("models")}${editingProfileId}/` : getApiUrl("models");
+      const method = editingProfileId ? "PATCH" : "POST";
+
+      const resp = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || `HTTP ${resp.status}`);
+      }
+
+      setShowModelModal(false);
+      setEditingProfileId(null);
+      await fetchModelProfiles();
+    } catch (err) {
+      setFormError(err.message || "Failed to save model profile.");
+    } finally {
+      setFormSaving(false);
+    }
+  };
+
   const getApiUrl = (endpoint) => {
     const base = process.env.NEXT_PUBLIC_API_URL
       ? process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, "")
       : "";
-    return `${base}/api/${endpoint}/`;
+    const cleanEndpoint = endpoint.replace(/^\/|\/$/g, "");
+    return `${base}/api/${cleanEndpoint}/`;
   };
 
   // Fetch Documents
@@ -156,6 +380,7 @@ export default function Home() {
   useEffect(() => {
     fetchDocuments();
     fetchHistory();
+    fetchModelProfiles();
   }, []);
 
   // Timer for elapsed seconds during active run
@@ -251,12 +476,17 @@ export default function Home() {
     const apiUrl = getApiUrl("research");
 
     try {
+      const requestPayload = { objective: trimmed, mode: researchMode };
+      if (selectedModelProfileId) {
+        requestPayload.model_profile_id = selectedModelProfileId;
+      }
+
       const response = await fetch(apiUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ objective: trimmed, mode: researchMode }),
+        body: JSON.stringify(requestPayload),
       });
 
       const contentType = response.headers.get("content-type") || "";
@@ -568,7 +798,7 @@ export default function Home() {
         <header className="header">
           <div className="header-top">
             <h1 className="logo">AURA</h1>
-            <span className="phase-pill">M10 — Research Modes &amp; Web</span>
+            <span className="phase-pill">M15 — Model Profiles</span>
           </div>
           <p className="subtitle">
             Autonomous Research &amp; Engineering Agent
@@ -616,6 +846,21 @@ export default function Home() {
               {historyRuns.length}
             </span>
           </button>
+          <button
+            type="button"
+            id="tab-models"
+            className={`nav-tab ${activeTab === "models" ? "active" : ""}`}
+            onClick={() => {
+              setActiveTab("models");
+              fetchModelProfiles();
+            }}
+          >
+            <span className="tab-icon" aria-hidden="true">🤖</span>
+            <span>Models</span>
+            <span className="tab-count-badge" id="models-count-badge">
+              {modelProfiles.length}
+            </span>
+          </button>
         </nav>
 
         {/* ================================================================= */}
@@ -626,6 +871,56 @@ export default function Home() {
             {/* Input Form Card */}
             <section className="card" aria-label="Research input">
               <form onSubmit={handleResearchSubmit} className="form-group">
+                {modelProfiles.length === 0 && (
+                  <div className="warning-banner" id="no-model-warning-banner">
+                    <div className="warning-banner-text">
+                      <span className="warning-banner-title">⚠️ No research model configured</span>
+                      <span>Configure a model profile before starting research.</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      id="btn-configure-model-banner"
+                      onClick={() => setActiveTab("models")}
+                    >
+                      Configure Model
+                    </button>
+                  </div>
+                )}
+
+                {/* Model Profile Selector (M15) */}
+                <div className="model-selector-container">
+                  <div className="mode-selector-header">
+                    <label htmlFor="model-profile-select" className="mode-selector-label">
+                      Inference Model Profile
+                    </label>
+                    <span className="mode-selector-desc">
+                      {activeProfile
+                        ? `${activeProfile.name} • ${activeProfile.provider} (${activeProfile.model})`
+                        : "No active model profile configured"}
+                    </span>
+                  </div>
+                  <div className="mode-select-wrapper">
+                    <select
+                      id="model-profile-select"
+                      className="mode-select-dropdown"
+                      value={selectedModelProfileId || (activeProfile ? activeProfile.id : "")}
+                      onChange={(e) => setSelectedModelProfileId(e.target.value)}
+                      disabled={loading || modelProfiles.length === 0}
+                    >
+                      {modelProfiles.length === 0 ? (
+                        <option value="">No model profile configured</option>
+                      ) : (
+                        modelProfiles.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} ({p.provider} / {p.model}){p.is_active ? " — Active" : ""}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </div>
+                </div>
+
                 {/* Research Mode Selector */}
                 <div className="mode-selector-container">
                   <div className="mode-selector-header">
@@ -770,6 +1065,21 @@ export default function Home() {
                 <div className="error-content">
                   <p className="error-title">Research Notice</p>
                   <p className="error-message">{error}</p>
+                  {(error.includes("No research model configured") || error.includes("Configure a model profile")) && (
+                    <div style={{ marginTop: "0.6rem" }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        id="btn-error-configure-model"
+                        onClick={() => {
+                          setActiveTab("models");
+                          fetchModelProfiles();
+                        }}
+                      >
+                        Configure Model Profile →
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1613,6 +1923,373 @@ export default function Home() {
                     </div>
                   </article>
                 ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ================================================================= */}
+        {/* TAB 4: MODEL PROFILES VIEW (M15) */}
+        {/* ================================================================= */}
+        {activeTab === "models" && (
+          <div className="models-view-container">
+            <div className="section-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <h2 className="section-title">Model Profiles</h2>
+                <p className="section-subtitle">
+                  Configure local and hosted LLM inference profiles for autonomous research.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn-add-doc"
+                id="btn-add-model"
+                onClick={openCreateModelModal}
+              >
+                <span>🤖 + Add Model Profile</span>
+              </button>
+            </div>
+
+            {modelsLoading && modelProfiles.length === 0 ? (
+              <div className="loading-card" role="status" aria-live="polite">
+                <div className="loading-spinner-large" aria-hidden="true" />
+                <p className="loading-title">Loading Model Profiles...</p>
+              </div>
+            ) : modelProfiles.length === 0 ? (
+              <div className="history-empty-state">
+                <div className="history-empty-icon" aria-hidden="true">🤖</div>
+                <h3 className="history-empty-title">No Model Profiles Configured</h3>
+                <p className="history-empty-desc">
+                  AURA requires an active model profile to execute research generation. Add a local Ollama model, NVIDIA NIM, or generic OpenAI-compatible server.
+                </p>
+                <button
+                  type="button"
+                  className="btn-add-doc"
+                  id="btn-add-first-model"
+                  onClick={openCreateModelModal}
+                >
+                  🤖 Add First Model Profile
+                </button>
+              </div>
+            ) : (
+              <div className="models-grid" id="models-grid">
+                {modelProfiles.map((profile) => (
+                  <div
+                    key={profile.id}
+                    className={`model-card ${profile.is_active ? "active-model-card" : ""}`}
+                    id={`model-card-${profile.id}`}
+                  >
+                    <div>
+                      <div className="model-card-header">
+                        <div className="model-title-group">
+                          <h3 className="model-card-title">{profile.name}</h3>
+                          <div className="model-badge-group">
+                            {profile.is_active && (
+                              <span className="badge-active">● Active</span>
+                            )}
+                            <span className="badge-provider">
+                              {profile.provider === "nvidia"
+                                ? "NVIDIA NIM"
+                                : profile.provider === "ollama"
+                                ? "Ollama"
+                                : profile.provider === "openai_compatible"
+                                ? "OpenAI-compatible"
+                                : profile.provider}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="model-meta-table">
+                        <div className="model-meta-row">
+                          <span className="model-meta-key">Model</span>
+                          <span className="model-meta-val">{profile.model}</span>
+                        </div>
+                        <div className="model-meta-row">
+                          <span className="model-meta-key">Endpoint</span>
+                          <span className="model-meta-val">{profile.endpoint || "Default"}</span>
+                        </div>
+                        <div className="model-meta-row">
+                          <span className="model-meta-key">Credentials</span>
+                          <span className="model-meta-val">
+                            {profile.has_api_key ? `Configured (${profile.api_key_masked})` : "None required"}
+                          </span>
+                        </div>
+                        <div className="model-meta-row">
+                          <span className="model-meta-key">Parameters</span>
+                          <span className="model-meta-val">
+                            {profile.temperature != null ? `T: ${profile.temperature}` : "T: default"} • {profile.timeout}s timeout
+                          </span>
+                        </div>
+                      </div>
+
+                      {testResults[profile.id] && (
+                        <div
+                          className={`test-connection-banner ${
+                            testResults[profile.id].loading
+                              ? ""
+                              : testResults[profile.id].success
+                              ? "success"
+                              : "error"
+                          }`}
+                        >
+                          {testResults[profile.id].loading ? (
+                            <span>Testing endpoint connection...</span>
+                          ) : testResults[profile.id].success ? (
+                            <span>✓ {testResults[profile.id].message} ({testResults[profile.id].latency_ms}ms)</span>
+                          ) : (
+                            <span>✗ {testResults[profile.id].error}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="model-card-actions">
+                      <div style={{ display: "flex", gap: "0.5rem" }}>
+                        {!profile.is_active && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            id={`btn-activate-${profile.id}`}
+                            onClick={() => handleActivateProfile(profile.id)}
+                          >
+                            Set Active
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          id={`btn-test-${profile.id}`}
+                          onClick={() => handleTestProfile(profile.id)}
+                          disabled={testResults[profile.id]?.loading}
+                        >
+                          Test
+                        </button>
+                      </div>
+                      <div style={{ display: "flex", gap: "0.5rem" }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          id={`btn-edit-${profile.id}`}
+                          onClick={() => openEditModelModal(profile)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm btn-danger"
+                          id={`btn-delete-${profile.id}`}
+                          onClick={() => handleDeleteProfile(profile.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Modal for Add / Edit Model Profile */}
+            {showModelModal && (
+              <div className="modal-backdrop" onClick={() => setShowModelModal(false)}>
+                <div className="modal-content-card" onClick={(e) => e.stopPropagation()}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+                    <h3 style={{ fontSize: "1.25rem", fontWeight: "600" }}>
+                      {editingProfileId ? "Edit Model Profile" : "Add Model Profile"}
+                    </h3>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setShowModelModal(false)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {formError && (
+                    <div className="test-connection-banner error" style={{ marginBottom: "1rem" }}>
+                      <span>✗ {formError}</span>
+                    </div>
+                  )}
+
+                  <form onSubmit={handleSaveProfile} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                    <div>
+                      <label className="label" htmlFor="model-form-name">Profile Name *</label>
+                      <input
+                        id="model-form-name"
+                        type="text"
+                        className="mode-select-dropdown"
+                        style={{ width: "100%", padding: "0.6rem 0.8rem", marginTop: "0.25rem" }}
+                        placeholder="e.g. My Local Llama"
+                        value={formName}
+                        onChange={(e) => setFormName(e.target.value)}
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="label" htmlFor="model-form-provider">Provider *</label>
+                      <select
+                        id="model-form-provider"
+                        className="mode-select-dropdown"
+                        style={{ width: "100%", padding: "0.6rem 0.8rem", marginTop: "0.25rem" }}
+                        value={formProvider}
+                        onChange={(e) => handleProviderPresetChange(e.target.value)}
+                      >
+                        <option value="nvidia">NVIDIA NIM</option>
+                        <option value="ollama">Ollama (Local / Native HTTP)</option>
+                        <option value="openai_compatible">OpenAI-compatible (vLLM, LM Studio, etc.)</option>
+                        <option value="mock">Mock Provider (Offline Testing)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="label" htmlFor="model-form-model">Model Identifier *</label>
+                      <input
+                        id="model-form-model"
+                        type="text"
+                        className="mode-select-dropdown"
+                        style={{ width: "100%", padding: "0.6rem 0.8rem", marginTop: "0.25rem" }}
+                        placeholder="e.g. nvidia/nemotron-3-ultra-550b-a55b or llama3.1:8b"
+                        value={formModel}
+                        onChange={(e) => setFormModel(e.target.value)}
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="label" htmlFor="model-form-endpoint">API Endpoint URL</label>
+                      <input
+                        id="model-form-endpoint"
+                        type="text"
+                        className="mode-select-dropdown"
+                        style={{ width: "100%", padding: "0.6rem 0.8rem", marginTop: "0.25rem" }}
+                        placeholder="e.g. http://localhost:11434"
+                        value={formEndpoint}
+                        onChange={(e) => setFormEndpoint(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="label" htmlFor="model-form-apikey">
+                        API Key / Token {editingProfileId && "(leave blank to preserve existing key)"}
+                      </label>
+                      <input
+                        id="model-form-apikey"
+                        type="password"
+                        className="mode-select-dropdown"
+                        style={{ width: "100%", padding: "0.6rem 0.8rem", marginTop: "0.25rem" }}
+                        placeholder={formProvider === "ollama" ? "Not required for local Ollama" : "sk-... or nvapi-..."}
+                        value={formApiKey}
+                        onChange={(e) => setFormApiKey(e.target.value)}
+                      />
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.75rem" }}>
+                      <div>
+                        <label className="label" htmlFor="model-form-temp">Temperature</label>
+                        <input
+                          id="model-form-temp"
+                          type="number"
+                          step="0.05"
+                          min="0"
+                          max="2"
+                          className="mode-select-dropdown"
+                          style={{ width: "100%", padding: "0.6rem 0.8rem", marginTop: "0.25rem" }}
+                          placeholder="e.g. 0.7"
+                          value={formTemperature}
+                          onChange={(e) => setFormTemperature(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="label" htmlFor="model-form-tokens">Max Tokens</label>
+                        <input
+                          id="model-form-tokens"
+                          type="number"
+                          min="1"
+                          className="mode-select-dropdown"
+                          style={{ width: "100%", padding: "0.6rem 0.8rem", marginTop: "0.25rem" }}
+                          placeholder="e.g. 1024"
+                          value={formMaxTokens}
+                          onChange={(e) => setFormMaxTokens(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="label" htmlFor="model-form-timeout">Timeout (s)</label>
+                        <input
+                          id="model-form-timeout"
+                          type="number"
+                          min="1"
+                          className="mode-select-dropdown"
+                          style={{ width: "100%", padding: "0.6rem 0.8rem", marginTop: "0.25rem" }}
+                          placeholder="30"
+                          value={formTimeout}
+                          onChange={(e) => setFormTimeout(e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.25rem" }}>
+                      <input
+                        id="model-form-active"
+                        type="checkbox"
+                        checked={formIsActive}
+                        onChange={(e) => setFormIsActive(e.target.checked)}
+                      />
+                      <label htmlFor="model-form-active" style={{ fontSize: "0.85rem", cursor: "pointer" }}>
+                        Set as Active Model Profile for Research
+                      </label>
+                    </div>
+
+                    {testResults["draft"] && (
+                      <div
+                        className={`test-connection-banner ${
+                          testResults["draft"].loading
+                            ? ""
+                            : testResults["draft"].success
+                            ? "success"
+                            : "error"
+                        }`}
+                      >
+                        {testResults["draft"].loading ? (
+                          <span>Testing draft connection...</span>
+                        ) : testResults["draft"].success ? (
+                          <span>✓ {testResults["draft"].message} ({testResults["draft"].latency_ms}ms)</span>
+                        ) : (
+                          <span>✗ {testResults["draft"].error}</span>
+                        )}
+                      </div>
+                    )}
+
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", marginTop: "0.5rem" }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={handleTestDraftProfile}
+                        disabled={testResults["draft"]?.loading || !formModel.trim()}
+                      >
+                        {testResults["draft"]?.loading ? "Testing..." : "Test Connection"}
+                      </button>
+                      <div style={{ display: "flex", gap: "0.5rem" }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={() => setShowModelModal(false)}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          className="btn-add-doc"
+                          disabled={formSaving}
+                        >
+                          {formSaving ? "Saving..." : "Save Profile"}
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+                </div>
               </div>
             )}
           </div>

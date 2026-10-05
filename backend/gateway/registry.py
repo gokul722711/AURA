@@ -1,6 +1,5 @@
 """Provider registry for AURA Model Gateway."""
 
-
 from typing import Any
 
 from gateway.base import LLMProvider
@@ -8,10 +7,14 @@ from gateway.config import GatewayConfig
 from gateway.exceptions import ProviderConfigurationError, ProviderUnavailableError
 from gateway.providers.mock import MockLLMProvider
 from gateway.providers.nvidia import NvidiaLLMProvider
+from gateway.providers.ollama import OllamaLLMProvider
+from gateway.providers.openai_compatible import OpenAICompatibleLLMProvider
 
 _REGISTRY: dict[str, type[LLMProvider]] = {
     "mock": MockLLMProvider,
     "nvidia": NvidiaLLMProvider,
+    "ollama": OllamaLLMProvider,
+    "openai_compatible": OpenAICompatibleLLMProvider,
 }
 
 
@@ -48,12 +51,37 @@ def get_provider_class(name: str) -> type[LLMProvider]:
 
 def create_provider(config: GatewayConfig) -> LLMProvider:
     """Instantiate the configured provider from a GatewayConfig."""
-    provider_cls = get_provider_class(config.provider)
+    provider_name = config.provider.lower().strip()
+    provider_cls = get_provider_class(provider_name)
     try:
-        if config.provider.lower().strip() == "nvidia":
+        if provider_name == "nvidia":
             kwargs: dict[str, Any] = {
                 "model": config.model,
                 "timeout": config.timeout,
+            }
+            if config.endpoint:
+                kwargs["endpoint"] = config.endpoint
+            if config.api_key:
+                kwargs["api_key"] = config.api_key
+            return provider_cls(**kwargs)
+
+        if provider_name == "openai_compatible":
+            kwargs = {
+                "model": config.model,
+                "timeout": config.timeout,
+                "extra_config": config.extra_config,
+            }
+            if config.endpoint:
+                kwargs["endpoint"] = config.endpoint
+            if config.api_key:
+                kwargs["api_key"] = config.api_key
+            return provider_cls(**kwargs)
+
+        if provider_name == "ollama":
+            kwargs = {
+                "model": config.model,
+                "timeout": config.timeout,
+                "extra_config": config.extra_config,
             }
             if config.endpoint:
                 kwargs["endpoint"] = config.endpoint

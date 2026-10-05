@@ -93,6 +93,36 @@ def execute_research_run(self, run_id: str) -> dict[str, Any]:
     try:
         from unittest.mock import Mock
 
+        # Resolve ModelProfile (M15)
+        profile = run.model_profile
+        if not profile and run.model_profile_id:
+            from gateway.models import ModelProfile
+
+            profile = ModelProfile.objects.filter(id=run.model_profile_id).first()
+        if not profile:
+            from gateway.models import get_active_model_profile
+
+            profile = get_active_model_profile()
+
+        from gateway.exceptions import NoModelConfiguredError
+        from gateway.gateway import get_gateway
+
+        try:
+            gateway = get_gateway(profile=profile, allow_fallback=False)
+        except NoModelConfiguredError as nm_exc:
+            err_text = str(nm_exc)
+            ResearchRun.objects.filter(id=run.id).update(
+                status=ResearchRun.STATUS_FAILED,
+                error_message=err_text,
+                completed_at=timezone.now(),
+            )
+            return {
+                "status": "failed",
+                "run_id": str(run.id),
+                "error": err_text,
+                "code": "NO_MODEL_CONFIGURED",
+            }
+
         is_kb_mocked = isinstance(create_deterministic_kb_pipeline, Mock)
         is_web_mocked = isinstance(create_deterministic_web_pipeline, Mock)
         is_hybrid_mocked = isinstance(create_deterministic_hybrid_pipeline, Mock)
@@ -103,25 +133,48 @@ def execute_research_run(self, run_id: str) -> dict[str, Any]:
                 runtime = create_research_runtime(mode=run.mode)
                 research_result = runtime.run_research(run.objective)
             else:
-                pipeline = create_deterministic_kb_pipeline()
+                pipeline = (
+                    create_deterministic_kb_pipeline()
+                    if is_kb_mocked
+                    else create_deterministic_kb_pipeline(gateway=gateway)
+                )
                 research_result = pipeline.run(run.objective)
         elif run.mode == ResearchRun.MODE_WEB:
             if is_agent_mocked and not is_web_mocked:
                 runtime = create_research_runtime(mode=run.mode)
                 research_result = runtime.run_research(run.objective)
             else:
-                pipeline = create_deterministic_web_pipeline()
+                pipeline = (
+                    create_deterministic_web_pipeline()
+                    if is_web_mocked
+                    else create_deterministic_web_pipeline(gateway=gateway)
+                )
                 research_result = pipeline.run(run.objective)
         elif run.mode == ResearchRun.MODE_WEB_KNOWLEDGE_BASE:
             if is_agent_mocked and not is_hybrid_mocked:
                 runtime = create_research_runtime(mode=run.mode)
                 research_result = runtime.run_research(run.objective)
             else:
-                pipeline = create_deterministic_hybrid_pipeline()
+                pipeline = (
+                    create_deterministic_hybrid_pipeline()
+                    if is_hybrid_mocked
+                    else create_deterministic_hybrid_pipeline(gateway=gateway)
+                )
                 research_result = pipeline.run(run.objective)
         else:
-            runtime = create_research_runtime(mode=run.mode)
+            runtime = (
+                create_research_runtime(mode=run.mode)
+                if is_agent_mocked
+                else create_research_runtime(gateway=gateway, mode=run.mode)
+            )
             research_result = runtime.run_research(run.objective)
+
+        if profile is not None:
+            if hasattr(research_result, "metadata") and isinstance(research_result.metadata, dict):
+                research_result.metadata["model_profile_id"] = str(profile.id)
+                research_result.metadata["model_profile_name"] = profile.name
+                research_result.metadata["provider"] = profile.provider
+                research_result.metadata["model"] = profile.model
 
         # Check if research_result failed due to a transient provider error
         if (
@@ -171,15 +224,21 @@ def execute_research_run(self, run_id: str) -> dict[str, Any]:
             duration_ms = round(task_duration_ms, 2)
 
         # Atomic update: only complete if still running in DB (prevents overwriting concurrent cancellation)
+        update_kwargs: dict[str, Any] = {
+            "status": run_status,
+            "result": result_dict,
+            "duration_ms": duration_ms,
+            "completed_at": completed_time,
+            "error_message": error_msg,
+        }
+        if profile is not None:
+            update_kwargs["model_profile"] = profile
+            update_kwargs["model_name"] = profile.model
+            update_kwargs["provider_name"] = profile.provider
+
         rows = ResearchRun.objects.filter(
             id=run.id, status=ResearchRun.STATUS_RUNNING
-        ).update(
-            status=run_status,
-            result=result_dict,
-            duration_ms=duration_ms,
-            completed_at=completed_time,
-            error_message=error_msg,
-        )
+        ).update(**update_kwargs)
 
         if rows == 0:
             run.refresh_from_db(fields=["status"])

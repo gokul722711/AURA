@@ -31,6 +31,16 @@ class ProviderConfigurationError(GatewayError):
     pass
 
 
+class NoModelConfiguredError(ProviderConfigurationError):
+    """Raised when an operation requiring model generation is attempted but no ModelProfile is configured or active."""
+
+    def __init__(
+        self,
+        message: str = "No research model configured. Configure a model profile before starting research.",
+    ) -> None:
+        super().__init__(message)
+
+
 class GenerationError(GatewayError):
     """Raised when model generation fails during execution."""
 
